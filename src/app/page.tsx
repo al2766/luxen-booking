@@ -12,12 +12,13 @@ export default function HomePage() {
         <div className="max-w-6xl mx-auto px-4 py-4 flex items-center justify-between">
           <div className="text-lg font-bold">Luxen</div>
           <nav className="flex items-center gap-4">
-            <Link href="/home-clean" className="px-3 py-2 rounded hover:bg-white/10">
-              Home Cleann
+            <Link href="/residential-clean" className="px-3 py-2 rounded hover:bg-white/10">
+            Residential Clean
             </Link>
             <Link href="/office-clean" className="px-3 py-2 rounded hover:bg-white/10">
               Office Clean
             </Link>
+          
           </nav>
         </div>
       </header>
@@ -30,15 +31,16 @@ export default function HomePage() {
         </p>
 
         <div className="grid gap-4 sm:grid-cols-2">
-          <Link href="/home-clean" className="block rounded-lg border bg-white p-6 shadow hover:shadow-md">
-            <h3 className="text-lg font-semibold text-gray-900 mb-2">Home Clean</h3>
-            <p className="text-sm text-gray-600">Open the home cleaning booking form (standalone page).</p>
+          <Link href="/residential-clean" className="block rounded-lg border bg-white p-6 shadow hover:shadow-md">
+            <h3 className="text-lg font-semibold text-gray-900 mb-2">Residential Clean</h3>
+            <p className="text-sm text-gray-600">Residential cleaning booking form (standalone page).</p>
           </Link>
-
           <Link href="/office-clean" className="block rounded-lg border bg-white p-6 shadow hover:shadow-md">
             <h3 className="text-lg font-semibold text-gray-900 mb-2">Office Clean</h3>
             <p className="text-sm text-gray-600">Open the office cleaning booking form (standalone page).</p>
           </Link>
+          
+         
         </div>
       </main>
     </div>

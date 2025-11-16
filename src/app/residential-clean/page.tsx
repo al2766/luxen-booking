@@ -1,4 +1,4 @@
-// src/app/office-clean/page.tsx
+// src/app/home-clean/page.tsx
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
@@ -15,7 +15,18 @@ import {
   serverTimestamp,
 } from 'firebase/firestore';
 
-// ========= AddressLookup (with postcode coverage check, aligned with home-clean) =========
+import {
+  SizeId,
+  RoomItem,
+  WetRoomItem,
+  groupRoomSelections,
+  oneWetRoomItem,
+  formatRoomItems,
+  formatWetItems,
+  formatDuration,
+} from '@/lib/bookingTypes';
+
+// ========= AddressLookup (with postcode coverage check) =========
 type AddressLookupProps = {
   onAddressSelect?: (addr: {
     line1: string;
@@ -50,11 +61,11 @@ function AddressLookup({ onAddressSelect }: AddressLookupProps) {
     setError('');
   };
 
-  // Extract outward part (e.g. "M1", "M23") from a full postcode
+  // Extract outward part (e.g. "M1", "M23", "M17") from a full postcode
   const extractOutward = (raw: string): string | null => {
     const compact = raw.replace(/\s+/g, '').toUpperCase();
-    if (compact.length < 5) return null;
-    return compact.slice(0, compact.length - 3);
+    if (compact.length < 5) return null; // too short to be valid UK format
+    return compact.slice(0, compact.length - 3); // last 3 = inward part
   };
 
   const handleSearch = async (e: React.MouseEvent<HTMLButtonElement>) => {
@@ -229,7 +240,7 @@ function AddressLookup({ onAddressSelect }: AddressLookupProps) {
   return (
     <div className="address-lookup-container mb-0">
       <div className="text-sm font-semibold text-[#0071bc] mb-3 pb-2 border-b border-gray-200">
-        Site address
+        Address
       </div>
 
       {/* Postcode Search */}
@@ -239,7 +250,7 @@ function AddressLookup({ onAddressSelect }: AddressLookupProps) {
             className="fs-label block text-gray-700 mb-1"
             htmlFor="postcode"
           >
-            Enter postcode
+            Enter Postcode
           </label>
           <input
             className="fs-input w-full p-2 border rounded-lg"
@@ -256,7 +267,7 @@ function AddressLookup({ onAddressSelect }: AddressLookupProps) {
           onClick={handleSearch}
           disabled={loading}
         >
-          {loading ? 'Searching...' : 'Find address'}
+          {loading ? 'Searching...' : 'Find Address'}
         </button>
       </div>
 
@@ -268,7 +279,7 @@ function AddressLookup({ onAddressSelect }: AddressLookupProps) {
             className="fs-label block text-gray-700 mb-1"
             htmlFor="address-select"
           >
-            Select address
+            Select Address
           </label>
           <select
             className="fs-select w-full p-2 border rounded-lg"
@@ -297,7 +308,7 @@ function AddressLookup({ onAddressSelect }: AddressLookupProps) {
                 className="fs-label block text-gray-700 mb-1"
                 htmlFor="line1"
               >
-                Address line 1
+                Address Line 1
               </label>
               <input
                 className="fs-input w-full p-2 border rounded-lg"
@@ -314,7 +325,7 @@ function AddressLookup({ onAddressSelect }: AddressLookupProps) {
                 className="fs-label block text-gray-700 mb-1"
                 htmlFor="line2"
               >
-                Address line 2 (optional)
+                Address Line 2 (optional)
               </label>
               <input
                 className="fs-input w-full p-2 border rounded-lg"
@@ -330,7 +341,7 @@ function AddressLookup({ onAddressSelect }: AddressLookupProps) {
                 className="fs-label block text-gray-700 mb-1"
                 htmlFor="town"
               >
-                Town / city
+                Town/City
               </label>
               <input
                 className="fs-input w-full p-2 border rounded-lg"
@@ -381,14 +392,14 @@ function AddressLookup({ onAddressSelect }: AddressLookupProps) {
             className="fs-button bg-[#0071bc] text-white font-medium py-2 px-4 rounded-lg hover:opacity-95 transition duration-200"
             onClick={handleCustomAddressSubmit}
           >
-            Confirm address
+            Confirm Address
           </button>
         </div>
       )}
 
       {selectedAddress && !showAddressForm && (
         <div className="selected-address bg-gray-50 p-3 rounded-lg mb-3 text-sm">
-          <div className="mb-1 font-medium">Selected address:</div>
+          <div className="mb-1 font-medium">Selected Address:</div>
           <div>{selectedAddress.line1}</div>
           {selectedAddress.line2 && <div>{selectedAddress.line2}</div>}
           <div>{selectedAddress.town}</div>
@@ -433,7 +444,7 @@ function AddressLookup({ onAddressSelect }: AddressLookupProps) {
   );
 }
 
-// ========= Shared availability helpers (same as home-clean) =========
+// ========= Shared availability helpers (same as office-clean) =========
 type AnyAvail =
   | {
       available?: boolean;
@@ -539,12 +550,11 @@ const money = new Intl.NumberFormat('en-GB', {
   maximumFractionDigits: 2,
 });
 
-// ================= PRICING (Office – aligned with home) =================
+// ================= PRICING (kept same as office) =================
 const HOURLY_RATE = 28;
 const MIN_HOURS = 2;
 const SUPPLIES_FEE = 5;
-// threshold lowered to 4 hours so >4h assigns 2 cleaners
-const TEAM_THRESHOLD_HOURS = 4;
+const TEAM_THRESHOLD_HOURS = 6;
 const TEAM_FACTOR = 1.7;
 function roundUpToHalf(x: number) {
   return Math.ceil(x * 2) / 2;
@@ -554,7 +564,7 @@ function roundUpToHalf(x: number) {
 type SizeIdLocal = 'xs' | 's' | 'm' | 'l' | 'xl';
 type RoomTypeId =
   | 'open-plan'
-  | 'meeting'
+  | 'bedroom'
   | 'private-office'
   | 'reception'
   | 'corridor'
@@ -574,12 +584,12 @@ const SIZE_OPTIONS: {
 ];
 
 const ROOM_TYPES: { id: RoomTypeId; label: string; multiplier: number }[] = [
-  { id: 'open-plan', label: 'Open-plan area', multiplier: 1.2 },
-  { id: 'meeting', label: 'Meeting room', multiplier: 1.0 },
-  { id: 'private-office', label: 'Private office', multiplier: 0.8 },
-  { id: 'reception', label: 'Reception', multiplier: 0.9 },
+  { id: 'open-plan', label: 'Living room', multiplier: 1.2 },
+  { id: 'bedroom', label: 'Bedroom', multiplier: 1.0 },
+  { id: 'private-office', label: 'Home office / study', multiplier: 0.8 },
+  { id: 'reception', label: 'Hallway / landing', multiplier: 0.9 },
   { id: 'corridor', label: 'Corridor', multiplier: 0.5 },
-  { id: 'storage', label: 'Storage / copy room', multiplier: 0.6 },
+  { id: 'storage', label: 'Storage / utility', multiplier: 0.6 },
 ];
 
 const CLEAN_MULTIPLIER: Record<string, number> = {
@@ -590,13 +600,13 @@ const CLEAN_MULTIPLIER: Record<string, number> = {
 };
 
 const CLEAN_LABELS: Record<string, string> = {
-  'quite-clean': 'Low footfall',
-  average: 'Typical footfall',
-  'quite-dirty': 'High footfall',
-  filthy: 'Very high footfall',
+  'quite-clean': 'Quite clean',
+  average: 'Average',
+  'quite-dirty': 'Quite dirty',
+  filthy: 'Very dirty',
 };
 
-const PER_CUBICLE_HOURS = 0.35; // per cubicle
+const PER_CUBICLE_HOURS = 0.35; // per toilet/cubicle
 const KITCHEN_SIZE_WEIGHT: Record<SizeIdLocal, number> = {
   xs: 0.3,
   s: 0.5,
@@ -614,10 +624,10 @@ const ADDON_PRICES = {
 
 // approximate extra hours for each add-on
 const ADDON_HOURS = {
-  fridge: 0.5,
-  freezer: 0.75,
-  dishwasher: 0.25,
-  cupboards: 0.25,
+  fridge: 0.5, // 30 mins per fridge
+  freezer: 0.75, // 45 mins per freezer
+  dishwasher: 0.25, // 15 mins per dishwasher
+  cupboards: 0.25, // 15 mins per cupboards set
 };
 
 // time helpers
@@ -627,7 +637,7 @@ const timeToMinutes = (t: string) => {
 };
 const within = (x: number, a: number, b: number) => x >= a && x < b;
 
-type OfficeRoom = { typeId: RoomTypeId | ''; sizeId: SizeIdLocal | '' };
+type HomeRoom = { typeId: RoomTypeId | ''; sizeId: SizeIdLocal | '' };
 
 type ExtrasSummary = {
   fridge: number;
@@ -651,15 +661,15 @@ type KitchenSummary = {
 type BathroomsSummary = {
   count: number;
   avgToiletsPerBathroom: number;
+  sizeId: SizeIdLocal | '';
 };
 
-type SubmittedBooking = {
+type BookingSummaryState = {
   orderId: string;
   bookingDate: string;
   bookingTime: string;
-  estimatedHours: number;
-  totalPrice: number;
-  serviceType: string;
+  bookingDisplayDate: string;
+  bookingDisplayTime: string;
   customerName: string;
   customerEmail: string;
   customerPhone: string;
@@ -670,6 +680,33 @@ type SubmittedBooking = {
     county: string;
     postcode: string;
   };
+  totalPrice: number;
+  estimatedHours: number;
+};
+
+// initial states
+const initialFormState = {
+  customerName: '',
+  customerEmail: '',
+  customerPhone: '',
+  cleanliness: '',
+  products: '',
+  additionalInfo: '',
+  addressLine1: '',
+  addressLine2: '',
+  town: '',
+  county: '',
+  postcode: '',
+  serviceType: 'Home Cleaning',
+  access: '',
+  keyLocation: '',
+};
+
+const initialExtras: ExtrasSummary = {
+  fridge: 0,
+  freezer: 0,
+  dishwasher: 0,
+  cupboards: 0,
 };
 
 export default function Page() {
@@ -690,41 +727,22 @@ export default function Page() {
   const [step, setStep] = useState<number>(0);
 
   // main form details
-  const [form, setForm] = useState({
-    customerName: '',
-    customerEmail: '',
-    customerPhone: '',
-    cleanliness: '',
-    products: '',
-    additionalInfo: '',
-    addressLine1: '',
-    addressLine2: '',
-    town: '',
-    county: '',
-    postcode: '',
-    serviceType: 'Office Cleaning',
-    access: '',
-    keyLocation: '',
-    frequency: '',
-  });
+  const [form, setForm] = useState(initialFormState);
 
-  // office structured inputs
+  // home-specific structured inputs
   const [roomsCount, setRoomsCount] = useState<number>(0);
-  const [rooms, setRooms] = useState<OfficeRoom[]>([]);
+  const [rooms, setRooms] = useState<HomeRoom[]>([]);
   const [kitchensCount, setKitchensCount] = useState<number>(0);
   const [kitchenSizeId, setKitchenSizeId] = useState<SizeIdLocal | ''>('');
-  const [toiletRoomsCount, setToiletRoomsCount] = useState<number>(0);
-  const [avgCubicles, setAvgCubicles] = useState<number>(1);
-  const [toiletSizeId, setToiletSizeId] = useState<SizeIdLocal | ''>('');
-  const [extras, setExtras] = useState<ExtrasSummary>({
-    fridge: 0,
-    freezer: 0,
-    dishwasher: 0,
-    cupboards: 0,
-  });
+  const [bathroomsCount, setBathroomsCount] = useState<number>(0);
+  const [bathroomSizeId, setBathroomSizeId] = useState<SizeIdLocal | ''>('');
+  const [avgToilets, setAvgToilets] = useState<number>(1);
+  const [extras, setExtras] = useState<ExtrasSummary>(initialExtras);
 
-  const [submittedBooking, setSubmittedBooking] =
-    useState<SubmittedBooking | null>(null);
+  // booking completion state
+  const [bookingComplete, setBookingComplete] = useState(false);
+  const [lastBooking, setLastBooking] =
+    useState<BookingSummaryState | null>(null);
 
   // sizing & iframe behaviour
   useEffect(() => {
@@ -989,8 +1007,8 @@ export default function Page() {
     const kitchenW = kitchenSizeId ? KITCHEN_SIZE_WEIGHT[kitchenSizeId] : 0;
     const kitchensHours = kitchensCount * kitchenW;
 
-    const totalCubicles = toiletRoomsCount * Math.max(1, avgCubicles);
-    const toiletsHours = totalCubicles * PER_CUBICLE_HOURS;
+    const totalToilets = bathroomsCount * Math.max(1, avgToilets);
+    const toiletsHours = totalToilets * PER_CUBICLE_HOURS;
 
     const addOnHours =
       (extras.fridge ?? 0) * ADDON_HOURS.fridge +
@@ -1038,14 +1056,14 @@ export default function Page() {
     rooms,
     kitchensCount,
     kitchenSizeId,
-    toiletRoomsCount,
-    avgCubicles,
+    bathroomsCount,
+    avgToilets,
     extras,
     form.cleanliness,
     form.products,
   ]);
 
-  // summaries (for breakdown)
+  // simple summaries for display + storage
   const roomSummaries: RoomSummary[] = ROOM_TYPES.map((rt) => {
     const matching = rooms.filter((r) => r.typeId === rt.id);
     if (!matching.length) return null;
@@ -1063,8 +1081,9 @@ export default function Page() {
   };
 
   const bathroomsSummary: BathroomsSummary = {
-    count: toiletRoomsCount,
-    avgToiletsPerBathroom: avgCubicles,
+    count: bathroomsCount,
+    avgToiletsPerBathroom: avgToilets,
+    sizeId: bathroomSizeId || '',
   };
 
   const extrasSummary: ExtrasSummary = {
@@ -1074,6 +1093,7 @@ export default function Page() {
     cupboards: extras.cupboards ?? 0,
   };
 
+  // whether to show actual quote vs initial message
   const hasQuoteInputs =
     !!form.cleanliness ||
     roomsCount > 0 ||
@@ -1096,9 +1116,8 @@ export default function Page() {
       alert('Please fill name, email, and phone.');
       return;
     }
-    // address required
     if (!form.addressLine1 || !form.town || !form.postcode) {
-      alert('Please select or enter the site address.');
+      alert('Please enter your address (line 1, town/city and postcode).');
       return;
     }
 
@@ -1124,6 +1143,29 @@ export default function Page() {
       return `Room ${i + 1} — ${rt}${label ? ` — ${label}` : ''}`;
     });
 
+    const roomTypeCounts = {
+      bedrooms: 0,
+      livingRooms: 0,
+      utilityRooms: 0,
+    };
+
+    for (const r of rooms) {
+      if (!r.typeId) continue;
+      switch (r.typeId) {
+        case 'bedroom':
+          roomTypeCounts.bedrooms += 1;
+          break;
+        case 'open-plan':
+          roomTypeCounts.livingRooms += 1;
+          break;
+        case 'storage':
+          roomTypeCounts.utilityRooms += 1;
+          break;
+        default:
+          break;
+      }
+    }
+
     const zapPayload = {
       customerName: form.customerName,
       customerEmail: form.customerEmail,
@@ -1136,25 +1178,25 @@ export default function Page() {
       quoteAmountInPence: Math.round(pricing.totalPrice * 100),
       quoteDate: bookingDate,
       submittedAt,
-      bedrooms: '',
-      livingRooms: '',
-      kitchens: String(kitchensCount),
-      bathrooms: String(toiletRoomsCount),
+      bedrooms: roomTypeCounts.bedrooms,
+      livingRooms: roomTypeCounts.livingRooms,
+      kitchens: kitchensCount,
+      bathrooms: bathroomsCount,
       cleanliness: form.cleanliness,
       additionalRooms,
       addOns: addOnsList,
       estimatedHours: pricing.estimatedHours,
       totalPrice: pricing.totalPrice,
       additionalInfo: form.additionalInfo,
-      utilityRooms: '',
+      utilityRooms: roomTypeCounts.utilityRooms,
       products: form.products,
       twoCleaners: pricing.teamApplied,
       baseEstimatedHours: pricing.baseEstimatedHours,
-      frequency: form.frequency || '',
     };
 
     const endTime = addHoursToTime(bookingTime, zapPayload.estimatedHours ?? 1);
 
+    // strip noisy room fields from what we persist to Firestore
     const {
       additionalRooms: _additionalRooms,
       bedrooms: _bedrooms,
@@ -1188,13 +1230,13 @@ export default function Page() {
       status: 'confirmed',
     });
 
-    // finances logging (same pattern as residential)
+    // finances logging
     try {
       const financesRef = collection(db, 'finances');
 
       await addDoc(financesRef, {
         type: 'Income',
-        name: `Office clean booking ${orderId}`,
+        name: `Home clean booking ${orderId}`,
         amount: pricing.totalPrice,
         frequency: 'One-time',
         createdAt: serverTimestamp(),
@@ -1218,14 +1260,16 @@ export default function Page() {
       console.error('Failed to log finances for booking', err);
     }
 
-    // store details for confirmation screen
-    setSubmittedBooking({
+    // store booking summary for thank-you screen
+    const bookingDisplayDate = displayDate(selectedDate);
+    const bookingDisplayTime = displayHour(selectedTime);
+
+    setLastBooking({
       orderId,
       bookingDate,
       bookingTime,
-      estimatedHours: pricing.estimatedHours,
-      totalPrice: pricing.totalPrice,
-      serviceType: form.serviceType,
+      bookingDisplayDate,
+      bookingDisplayTime,
       customerName: form.customerName,
       customerEmail: form.customerEmail,
       customerPhone: form.customerPhone,
@@ -1236,42 +1280,26 @@ export default function Page() {
         county: form.county,
         postcode: form.postcode,
       },
+      totalPrice: pricing.totalPrice,
+      estimatedHours: pricing.estimatedHours,
     });
 
-    // reset form state
-    setStep(0);
+    // clear form state
+    setForm(initialFormState);
     setRoomsCount(0);
     setRooms([]);
     setKitchensCount(0);
     setKitchenSizeId('');
-    setToiletRoomsCount(0);
-    setAvgCubicles(1);
-    setToiletSizeId('');
-    setExtras({
-      fridge: 0,
-      freezer: 0,
-      dishwasher: 0,
-      cupboards: 0,
-    });
-    setSelectedTime('');
+    setBathroomsCount(0);
+    setBathroomSizeId('');
+    setAvgToilets(1);
+    setExtras(initialExtras);
     setSelectedDate(null);
-    setForm({
-      customerName: '',
-      customerEmail: '',
-      customerPhone: '',
-      cleanliness: '',
-      products: '',
-      additionalInfo: '',
-      addressLine1: '',
-      addressLine2: '',
-      town: '',
-      county: '',
-      postcode: '',
-      serviceType: 'Office Cleaning',
-      access: '',
-      keyLocation: '',
-      frequency: '',
-    });
+    setSelectedTime('');
+    setStep(0);
+
+    // show thank-you layout
+    setBookingComplete(true);
   }
 
   // inputs/styles
@@ -1282,26 +1310,32 @@ export default function Page() {
     'text-sm font-semibold text-[#0071bc] mb-4 pb-3 border-b border-gray-200';
   const smallMuted = 'text-xs text-gray-600';
 
-  // step guards (sliding section only)
+  // step guards (now only for the sliding sections; contact/address is always visible)
   const canNext = useMemo(() => {
+    // step 0: basic property (rooms + cleanliness)
     if (step === 0) {
       return roomsCount >= 0 && !!form.cleanliness;
     }
+    // step 1: room details
     if (step === 1) {
       if (roomsCount === 0) return true;
       return rooms.every((r) => r.typeId && r.sizeId);
     }
+    // step 2: kitchens
     if (step === 2) {
       if (kitchensCount === 0) return true;
       return !!kitchenSizeId;
     }
+    // step 3: bathrooms – require size if any bathrooms
     if (step === 3) {
-      if (toiletRoomsCount === 0) return true;
-      return !!toiletSizeId;
+      if (bathroomsCount === 0) return true;
+      return !!bathroomSizeId;
     }
+    // step 4: extras & products – require products selection
     if (step === 4) {
       return !!form.products;
     }
+    // step 5: access
     if (step === 5) {
       return !!form.access && (form.access !== 'key' || !!form.keyLocation);
     }
@@ -1312,8 +1346,8 @@ export default function Page() {
     rooms,
     kitchensCount,
     kitchenSizeId,
-    toiletRoomsCount,
-    toiletSizeId,
+    bathroomsCount,
+    bathroomSizeId,
     form.cleanliness,
     form.products,
     form.access,
@@ -1481,7 +1515,7 @@ export default function Page() {
         @keyframes fadeInSoft {
           from {
             opacity: 0;
-            transform: translateY(6px);
+            transform: translateY(4px);
           }
           to {
             opacity: 1;
@@ -1489,156 +1523,130 @@ export default function Page() {
           }
         }
         .animate-fade-in {
-          animation: fadeInSoft 240ms ease-out;
+          animation: fadeInSoft 200ms ease-out;
         }
       `}</style>
 
-      <div className="container">
-        {submittedBooking ? (
-          <div className="forms-row animate-fade-in">
-            {/* Left: booking details (taking calendar slot) */}
-            <aside className="calendar-container self-start w-full md:w-4/12 bg-white rounded-lg shadow-md p-5">
-              <div className="text-sm font-semibold mb-3 text-[#0071bc] border-b border-gray-200 pb-2">
-                Booking details
-              </div>
-              <div className="space-y-3 text-sm text-gray-800">
-                <div>
-                  <div className="text-xs text-gray-500 mb-0.5">Reference</div>
-                  <div className="font-mono text-sm">
-                    {submittedBooking.orderId}
-                  </div>
+      {bookingComplete && lastBooking ? (
+        <div className="container">
+          <div className="forms-row">
+            {/* Left: booking summary (similar width as calendar) */}
+            <aside className="calendar-container self-start w-full md:w-4/12">
+              <div className="bg-white rounded-lg shadow-md p-5 animate-fade-in">
+                <div
+                  className="text-sm font-semibold mb-3"
+                  style={{ color: PRIMARY }}
+                >
+                  Booking details
                 </div>
-                <div className="grid grid-cols-2 gap-2">
+
+                <div className="space-y-2 text-xs text-gray-700">
                   <div>
-                    <div className="text-xs text-gray-500 mb-0.5">Date</div>
-                    <div className="font-medium">
-                      {displayDate(new Date(submittedBooking.bookingDate))}
+                    <div className="font-medium text-gray-900">Order ID</div>
+                    <div>{lastBooking.orderId}</div>
+                  </div>
+
+                  <div>
+                    <div className="font-medium text-gray-900">Date & time</div>
+                    <div>
+                      {lastBooking.bookingDisplayDate} at{' '}
+                      {lastBooking.bookingDisplayTime}
                     </div>
                   </div>
+
                   <div>
-                    <div className="text-xs text-gray-500 mb-0.5">
-                      Start time
+                    <div className="font-medium text-gray-900">
+                      Contact details
                     </div>
-                    <div className="font-medium">
-                      {displayHour(submittedBooking.bookingTime.split(':')[0])}
-                    </div>
+                    <div>{lastBooking.customerName}</div>
+                    <div>{lastBooking.customerEmail}</div>
+                    <div>{lastBooking.customerPhone}</div>
                   </div>
-                </div>
-                <div>
-                  <div className="text-xs text-gray-500 mb-0.5">Service</div>
-                  <div className="font-medium">
-                    {submittedBooking.serviceType}
-                  </div>
-                </div>
-                <div className="grid grid-cols-2 gap-2">
+
                   <div>
-                    <div className="text-xs text-gray-500 mb-0.5">
-                      Estimated time
-                    </div>
-                    <div className="font-medium">
-                      {submittedBooking.estimatedHours} hours
-                    </div>
-                  </div>
-                  <div>
-                    <div className="text-xs text-gray-500 mb-0.5">
-                      Estimated total
-                    </div>
-                    <div className="font-semibold text-[#0071bc]">
-                      {money.format(submittedBooking.totalPrice)}
-                    </div>
+                    <div className="font-medium text-gray-900">Address</div>
+                    <div>{lastBooking.address.line1}</div>
+                    {lastBooking.address.line2 && (
+                      <div>{lastBooking.address.line2}</div>
+                    )}
+                    <div>{lastBooking.address.town}</div>
+                    {lastBooking.address.county && (
+                      <div>{lastBooking.address.county}</div>
+                    )}
+                    <div>{lastBooking.address.postcode}</div>
                   </div>
                 </div>
 
-                <div className="pt-2 border-t border-gray-200">
-                  <div className="text-xs text-gray-500 mb-0.5">
-                    Contact person
+                <div className="border-t border-gray-200 pt-3 mt-3 text-sm">
+                  <div className="flex items-center justify-between text-xs text-gray-700 mb-1">
+                    <span>Estimated time</span>
+                    <span>{lastBooking.estimatedHours} hours</span>
                   </div>
-                  <div className="font-medium">
-                    {submittedBooking.customerName || '—'}
-                  </div>
-                  <div className="text-xs text-gray-600">
-                    {submittedBooking.customerEmail}
-                  </div>
-                  <div className="text-xs text-gray-600">
-                    {submittedBooking.customerPhone}
-                  </div>
-                </div>
-
-                <div className="pt-2 border-t border-gray-200">
-                  <div className="text-xs text-gray-500 mb-0.5">
-                    Site address
-                  </div>
-                  <div>{submittedBooking.address.line1}</div>
-                  {submittedBooking.address.line2 && (
-                    <div>{submittedBooking.address.line2}</div>
-                  )}
-                  <div>
-                    {submittedBooking.address.town}
-                    {submittedBooking.address.county
-                      ? `, ${submittedBooking.address.county}`
-                      : ''}
-                  </div>
-                  <div className="font-medium">
-                    {submittedBooking.address.postcode}
+                  <div className="flex items-center justify-between font-semibold text-base text-gray-900">
+                    <span>Total price</span>
+                    <span>{money.format(lastBooking.totalPrice)}</span>
                   </div>
                 </div>
               </div>
             </aside>
 
-            {/* Right: thank you content */}
+            {/* Right: thank-you message */}
             <section className="form-container w-full md:w-8/12 self-start">
               <div className="fs-form bg-white rounded-lg shadow-md p-6 animate-fade-in">
-                <div className="mb-4">
-                  <div className="text-xs font-semibold tracking-wide text-[#0071bc] uppercase">
-                    Booking received
+                <div
+                  className="text-lg font-semibold mb-1"
+                  style={{ color: PRIMARY }}
+                >
+                  Thank you{lastBooking.customerName
+                    ? `, ${lastBooking.customerName}`
+                    : ''}!
+                </div>
+                <p className="text-sm text-gray-700 mb-4">
+                  Your home clean has been booked and is now awaiting payment.
+                </p>
+
+                <div className="grid gap-3">
+                  <div className="rounded-lg border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-800">
+                    <div className="font-semibold text-[#0071bc] mb-1">
+                      1. Check your email
+                    </div>
+                    <p className="text-xs text-gray-700">
+                      We&apos;ve sent a confirmation with all booking details
+                      and a secure payment link.
+                    </p>
                   </div>
-                  <h1 className="text-2xl font-semibold text-gray-900 mt-1">
-                    Thank you for booking with Luxen Cleaning
-                  </h1>
-                  <p className="text-sm text-gray-700 mt-2">
-                    We&apos;ve sent a confirmation email with all of the
-                    details.
-                  </p>
+
+                  <div className="rounded-lg border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-800">
+                    <div className="font-semibold text-[#0071bc] mb-1">
+                      2. Complete payment
+                    </div>
+                    <p className="text-xs text-gray-700">
+                      Please make payment at least 24 hours before your booking
+                      time to fully confirm the clean.
+                    </p>
+                  </div>
+
+                  <div className="rounded-lg border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-800">
+                    <div className="font-semibold text-[#0071bc] mb-1">
+                      3. On the day
+                    </div>
+                    <p className="text-xs text-gray-700">
+                      Your cleaner will arrive within the chosen time slot and
+                      follow any notes you&apos;ve provided.
+                    </p>
+                  </div>
                 </div>
 
-                <div className="mt-4 grid grid-cols-1 md:grid-cols-3 gap-3">
-                  <div className="rounded-xl border border-gray-100 bg-gray-50 p-3">
-                    <div className="text-xs font-semibold text-gray-700 mb-1">
-                      Step 1
-                    </div>
-                    <p className="text-sm text-gray-700">
-                      Check your email for your booking confirmation and payment
-                      link.
-                    </p>
-                  </div>
-                  <div className="rounded-xl border border-gray-100 bg-gray-50 p-3">
-                    <div className="text-xs font-semibold text-gray-700 mb-1">
-                      Step 2
-                    </div>
-                    <p className="text-sm text-gray-700">
-                      Make payment at least 24 hours before the clean to fully
-                      confirm your booking.
-                    </p>
-                  </div>
-                  <div className="rounded-xl border border-gray-100 bg-gray-50 p-3">
-                    <div className="text-xs font-semibold text-gray-700 mb-1">
-                      Step 3
-                    </div>
-                    <p className="text-sm text-gray-700">
-                      Your cleaner will arrive for the agreed time. Please make
-                      sure access and alarms are arranged.
-                    </p>
-                  </div>
-                </div>
-
-                <div className="mt-6 rounded-lg border border-[#0071bc]/15 bg-[#f5f9fc] px-4 py-3 text-xs text-gray-700">
-                  If you need to amend or cancel your booking, simply reply to
-                  the confirmation email and we&apos;ll be happy to help.
+                <div className="mt-5 text-xs text-gray-500">
+                  If anything looks incorrect, just reply to your confirmation
+                  email and we&apos;ll adjust it for you.
                 </div>
               </div>
             </section>
           </div>
-        ) : (
+        </div>
+      ) : (
+        <div className="container">
           <div className="forms-row">
             {/* Calendar Container */}
             <aside className="calendar-container self-start w-full md:w-4/12 bg-white rounded-lg shadow-md p-5">
@@ -1768,7 +1776,7 @@ export default function Page() {
                       className="text-lg font-semibold mb-3"
                       style={{ color: PRIMARY }}
                     >
-                      Select a time
+                      Select a Time
                     </h2>
 
                     {timesLoading ? (
@@ -1835,7 +1843,7 @@ export default function Page() {
                     <input
                       className={input}
                       name="customerName"
-                      placeholder="Company or contact name"
+                      placeholder="Full name"
                       value={form.customerName}
                       onChange={(e) =>
                         setForm((p) => ({ ...p, customerName: e.target.value }))
@@ -1866,7 +1874,7 @@ export default function Page() {
                   </div>
                 </div>
 
-                {/* ADDRESS */}
+                {/* ADDRESS (always visible under contact) */}
                 <div className="mt-6">
                   <AddressLookup
                     onAddressSelect={(addr) =>
@@ -1882,12 +1890,12 @@ export default function Page() {
                   />
                 </div>
 
-                {/* Sliding multi-step section with stronger separation */}
+                {/* Sliding multi-step section with clearer separation */}
                 <div
                   key={`panel-${step}`}
-                  className="step-anim mt-6 rounded-lg border border-gray-300 bg-gray-50 px-4 py-4 md:px-5 md:py-5"
+                  className="step-anim mt-6 rounded-lg border border-gray-200 bg-gray-50 px-4 py-4 md:px-5 md:py-5"
                 >
-                  {/* STEP 0: ROOMS & FOOTFALL */}
+                  {/* STEP 0: ROOMS & CLEANLINESS */}
                   {step === 0 && (
                     <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
                       <div>
@@ -1903,36 +1911,39 @@ export default function Page() {
                             )
                           }
                         >
-                          {[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 15, 20].map(
-                            (n) => (
-                              <option key={n} value={n}>
-                                {n}
-                              </option>
-                            )
-                          )}
+                          {[
+                            0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 15, 20,
+                          ].map((n) => (
+                            <option key={n} value={n}>
+                              {n}
+                            </option>
+                          ))}
                         </select>
                         <p className={smallMuted}>
-                          Include open-plan areas, meeting rooms, private
-                          offices, corridors and storage.
+                          Include bedrooms, living rooms, dining rooms, offices,
+                          etc.
                         </p>
                       </div>
                       <div>
                         <label className="block text-sm font-medium text-gray-800 mb-1">
-                          Footfall level
+                          How dirty is the property?
                         </label>
                         <select
                           className={select}
                           value={form.cleanliness}
                           onChange={(e) =>
-                            setForm((p) => ({ ...p, cleanliness: e.target.value }))
+                            setForm((p) => ({
+                              ...p,
+                              cleanliness: e.target.value,
+                            }))
                           }
                           required
                         >
                           <option value="">Select</option>
-                          <option value="quite-clean">Low</option>
-                          <option value="average">Typical</option>
-                          <option value="quite-dirty">High</option>
-                          <option value="filthy">Very high</option>
+                          <option value="quite-clean">Quite clean</option>
+                          <option value="average">Average</option>
+                          <option value="quite-dirty">Quite dirty</option>
+                          <option value="filthy">Very dirty</option>
                         </select>
                         <p className={smallMuted}>
                           Used to adjust the time estimate.
@@ -1946,7 +1957,7 @@ export default function Page() {
                     (roomsCount === 0 ? (
                       <div className="text-sm text-gray-700">
                         No extra room details to add — continue to kitchen and
-                        toilet details.
+                        bathroom details.
                       </div>
                     ) : (
                       <div className="space-y-3">
@@ -1963,7 +1974,8 @@ export default function Page() {
                                 className={select}
                                 value={r.typeId}
                                 onChange={(e) => {
-                                  const val = e.target.value as RoomTypeId | '';
+                                  const val =
+                                    e.target.value as RoomTypeId | '';
                                   setRooms((prev) =>
                                     prev.map((x, i) =>
                                       i === idx ? { ...x, typeId: val } : x
@@ -1987,9 +1999,8 @@ export default function Page() {
                                 className={select}
                                 value={r.sizeId}
                                 onChange={(e) => {
-                                  const val = e.target.value as
-                                    | SizeIdLocal
-                                    | '';
+                                  const val =
+                                    e.target.value as SizeIdLocal | '';
                                   setRooms((prev) =>
                                     prev.map((x, i) =>
                                       i === idx ? { ...x, sizeId: val } : x
@@ -2015,7 +2026,7 @@ export default function Page() {
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                       <div>
                         <label className="block text-sm font-medium text-gray-800 mb-1">
-                          How many kitchens / tea points?
+                          How many kitchens?
                         </label>
                         <select
                           className={select}
@@ -2035,13 +2046,15 @@ export default function Page() {
                       </div>
                       <div>
                         <label className="block text-sm font-medium text-gray-800 mb-1">
-                          Typical size
+                          Typical kitchen size
                         </label>
                         <select
                           className={select}
                           value={kitchenSizeId}
                           onChange={(e) =>
-                            setKitchenSizeId(e.target.value as SizeIdLocal | '')
+                            setKitchenSizeId(
+                              e.target.value as SizeIdLocal | ''
+                            )
                           }
                           disabled={kitchensCount === 0}
                         >
@@ -2057,18 +2070,18 @@ export default function Page() {
                     </div>
                   )}
 
-                  {/* STEP 3: TOILETS */}
+                  {/* STEP 3: BATHROOMS */}
                   {step === 3 && (
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                       <div>
                         <label className="block text-sm font-medium text-gray-800 mb-1">
-                          How many toilet rooms?
+                          How many bathrooms/toilets?
                         </label>
                         <select
                           className={select}
-                          value={toiletRoomsCount}
+                          value={bathroomsCount}
                           onChange={(e) =>
-                            setToiletRoomsCount(
+                            setBathroomsCount(
                               Math.max(0, parseInt(e.target.value || '0', 10))
                             )
                           }
@@ -2080,44 +2093,19 @@ export default function Page() {
                           ))}
                         </select>
                       </div>
-
                       <div>
                         <label className="block text-sm font-medium text-gray-800 mb-1">
-                          Avg cubicles per toilet room
+                          Typical bathroom size
                         </label>
                         <select
                           className={select}
-                          value={avgCubicles}
+                          value={bathroomSizeId}
                           onChange={(e) =>
-                            setAvgCubicles(
-                              Math.max(1, parseInt(e.target.value || '1', 10))
+                            setBathroomSizeId(
+                              e.target.value as SizeIdLocal | ''
                             )
                           }
-                        >
-                          {[1, 2, 3, 4, 5, 6].map((n) => (
-                            <option key={n} value={n}>
-                              {n}
-                            </option>
-                          ))}
-                        </select>
-                        <p className={smallMuted}>
-                          We&apos;ll estimate{' '}
-                          {toiletRoomsCount * Math.max(1, avgCubicles)} cubicles
-                          in total.
-                        </p>
-                      </div>
-
-                      <div>
-                        <label className="block text-sm font-medium text-gray-800 mb-1">
-                          Typical toilet room size
-                        </label>
-                        <select
-                          className={select}
-                          value={toiletSizeId}
-                          onChange={(e) =>
-                            setToiletSizeId(e.target.value as SizeIdLocal | '')
-                          }
-                          disabled={toiletRoomsCount === 0}
+                          disabled={bathroomsCount === 0}
                         >
                           <option value="">Select</option>
                           {SIZE_OPTIONS.map((s) => (
@@ -2126,15 +2114,11 @@ export default function Page() {
                             </option>
                           ))}
                         </select>
-                        <p className={smallMuted}>
-                          Use extra small for compact WC rooms / single
-                          cubicles.
-                        </p>
                       </div>
                     </div>
                   )}
 
-                  {/* STEP 4: EXTRAS & SUPPLIES */}
+                  {/* STEP 4: EXTRAS & PRODUCTS */}
                   {step === 4 && (
                     <>
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -2175,7 +2159,10 @@ export default function Page() {
                                   0,
                                   parseInt(e.target.value || '0', 10)
                                 );
-                                setExtras((prev) => ({ ...prev, [item.key]: val }));
+                                setExtras((prev) => ({
+                                  ...prev,
+                                  [item.key]: val,
+                                }));
                               }}
                             >
                               {[0, 1, 2, 3, 4, 5, 6, 8, 10].map((n) => (
@@ -2188,53 +2175,35 @@ export default function Page() {
                         ))}
                       </div>
 
-                      <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-3">
-                        <div>
-                          <label className="mb-1 block text-xs font-medium text-gray-700">
-                            Supplies
-                          </label>
-                          <select
-                            className={select}
-                            name="products"
-                            value={form.products}
-                            onChange={(e) =>
-                              setForm((p) => ({ ...p, products: e.target.value }))
-                            }
-                            required
-                          >
-                            <option value="">Select option</option>
-                            <option value="bring">
-                              Bring our supplies (+{money.format(SUPPLIES_FEE)})
-                            </option>
-                            <option value="customer">Use site supplies</option>
-                          </select>
-                        </div>
-                        <div>
-                          <label className="mb-1 block text-xs font-medium text-gray-700">
-                            Cleaning frequency
-                          </label>
-                          <select
-                            className={select}
-                            name="frequency"
-                            value={form.frequency}
-                            onChange={(e) =>
-                              setForm((p) => ({ ...p, frequency: e.target.value }))
-                            }
-                          >
-                            <option value="">One-off clean</option>
-                            <option value="weekly">Weekly</option>
-                            <option value="fortnightly">Fortnightly</option>
-                            <option value="monthly">Monthly</option>
-                          </select>
-                        </div>
+                      <div className="mt-4">
+                        <label className="mb-1 block text-xs font-medium text-gray-700">
+                          Cleaning products
+                        </label>
+                        <select
+                          className={select}
+                          name="products"
+                          value={form.products}
+                          onChange={(e) =>
+                            setForm((p) => ({ ...p, products: e.target.value }))
+                          }
+                          required
+                        >
+                          <option value="">Select option</option>
+                          <option value="bring">
+                            Bring our supplies (+{money.format(SUPPLIES_FEE)})
+                          </option>
+                          <option value="customer">
+                            Use my cleaning products
+                          </option>
+                        </select>
                       </div>
                     </>
                   )}
 
-                  {/* STEP 5: SITE & ACCESS */}
+                  {/* STEP 5: ACCESS */}
                   {step === 5 && (
                     <>
-                      <div className={sectionTitle}>Site &amp; access</div>
+                      <div className={sectionTitle}>Home & Access</div>
 
                       <div className="grid grid-cols-1 gap-4 mt-2">
                         <div className="fs-field">
@@ -2242,7 +2211,7 @@ export default function Page() {
                             className="fs-label block text-gray-700 mb-1"
                             htmlFor="access"
                           >
-                            How will we access the site?
+                            How will we access the property?
                           </label>
                           <select
                             className="fs-select w-full p-2 rounded-lg"
@@ -2250,7 +2219,10 @@ export default function Page() {
                             name="access"
                             value={form.access || ''}
                             onChange={(e) =>
-                              setForm((p) => ({ ...p, access: e.target.value }))
+                              setForm((p) => ({
+                                ...p,
+                                access: e.target.value,
+                              }))
                             }
                             required
                             style={{
@@ -2263,10 +2235,10 @@ export default function Page() {
                               Select access method
                             </option>
                             <option value="home">
-                              A member of staff will meet the cleaners
+                              Someone will be home to let you in
                             </option>
                             <option value="key">
-                              Key / fob will be left in a location
+                              Key will be left in a location
                             </option>
                           </select>
                         </div>
@@ -2277,7 +2249,7 @@ export default function Page() {
                               className="text-gray-700 fs-label block text-gray-700 mb-1"
                               htmlFor="keyLocation"
                             >
-                              Where will the key / fob be located?
+                              Please specify where the key will be located
                             </label>
                             <input
                               className="fs-input w-full p-2 border rounded-lg"
@@ -2291,7 +2263,7 @@ export default function Page() {
                                   keyLocation: e.target.value,
                                 }))
                               }
-                              placeholder="e.g., reception, lockbox (code), security desk…"
+                              placeholder="e.g., With a neighbour, lockbox (code), etc."
                               required
                             />
                           </div>
@@ -2314,7 +2286,7 @@ export default function Page() {
                                 additionalInfo: e.target.value,
                               }))
                             }
-                            placeholder="Parking, alarm codes, security procedures, special instructions…"
+                            placeholder="Parking info, pets, special requests…"
                           />
                         </div>
                       </div>
@@ -2354,7 +2326,7 @@ export default function Page() {
                       className="fs-button bg-[#0071bc] text-white font-medium py-3 px-6 rounded-lg hover:opacity-90 transition duration-200"
                       style={{ backgroundColor: PRIMARY }}
                     >
-                      Book now — {money.format(pricing.totalPrice)}
+                      Book Now — {money.format(pricing.totalPrice)}
                     </button>
                   )}
                 </div>
@@ -2367,8 +2339,8 @@ export default function Page() {
 
                   {!hasQuoteInputs ? (
                     <div className="text-xs text-gray-600 py-3 animate-fade-in">
-                      Enter a few details above to see an instant estimated time
-                      and price for your office clean.
+                      Enter your details to see an instant time &amp; price
+                      estimate.
                     </div>
                   ) : (
                     <div className="space-y-3 animate-fade-in">
@@ -2412,9 +2384,7 @@ export default function Page() {
 
                       {kitchenSummary.count > 0 && (
                         <div className="text-xs text-gray-700">
-                          <div className="font-medium mb-1">
-                            Kitchens / tea points
-                          </div>
+                          <div className="font-medium mb-1">Kitchens</div>
                           <div className="rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-[11px] text-gray-800 flex items-center justify-between">
                             <span>
                               {kitchenSummary.count} kitchen
@@ -2438,12 +2408,12 @@ export default function Page() {
                       {bathroomsSummary.count > 0 && (
                         <div className="text-xs text-gray-700">
                           <div className="font-medium mb-1">
-                            Toilet rooms / cubicles
+                            Bathrooms / toilets
                           </div>
                           <div className="rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-[11px] text-gray-800">
-                            {bathroomsSummary.count} toilet room
+                            {bathroomsSummary.count} bathroom
                             {bathroomsSummary.count > 1 ? 's' : ''} (avg{' '}
-                            {bathroomsSummary.avgToiletsPerBathroom} cubicle
+                            {bathroomsSummary.avgToiletsPerBathroom} toilet
                             {bathroomsSummary.avgToiletsPerBathroom > 1
                               ? 's'
                               : ''}{' '}
@@ -2486,7 +2456,7 @@ export default function Page() {
                       {form.cleanliness && (
                         <div className="text-xs text-gray-700">
                           <div className="font-medium mb-1">
-                            Footfall level
+                            Cleanliness level
                           </div>
                           <div className="rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-[11px] text-gray-800 inline-block">
                             {CLEAN_LABELS[form.cleanliness] ??
@@ -2497,13 +2467,15 @@ export default function Page() {
 
                       {form.products && (
                         <div className="text-xs text-gray-700">
-                          <div className="font-medium mb-1">Supplies</div>
+                          <div className="font-medium mb-1">
+                            Cleaning products
+                          </div>
                           <div className="rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-[11px] text-gray-800 inline-block">
                             {form.products === 'bring'
                               ? `We bring our supplies (+${money.format(
                                   SUPPLIES_FEE
                                 )})`
-                              : 'Use site supplies'}
+                              : 'Use your cleaning products'}
                           </div>
                         </div>
                       )}
@@ -2537,8 +2509,8 @@ export default function Page() {
               </form>
             </section>
           </div>
-        )}
-      </div>
+        </div>
+      )}
     </div>
   );
 }
