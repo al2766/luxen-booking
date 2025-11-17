@@ -15,6 +15,8 @@ import {
   serverTimestamp,
 } from 'firebase/firestore';
 
+import { IframeHeightReporter } from '../IframeHeightReporter';
+
 import {
   SizeId,
   RoomItem,
@@ -710,6 +712,7 @@ const initialExtras: ExtrasSummary = {
 };
 
 export default function Page() {
+  
   // date range for calendar
   const now = new Date();
   now.setHours(0, 0, 0, 0);
@@ -743,45 +746,6 @@ export default function Page() {
   const [bookingComplete, setBookingComplete] = useState(false);
   const [lastBooking, setLastBooking] =
     useState<BookingSummaryState | null>(null);
-
-  // sizing & iframe behaviour
-  useEffect(() => {
-    function postHeight() {
-      const h =
-        document.documentElement.scrollHeight || document.body.scrollHeight;
-      parent.postMessage({ type: 'resize', height: h }, '*');
-    }
-    postHeight();
-    window.addEventListener('resize', postHeight);
-    new ResizeObserver(postHeight).observe(document.body);
-    return () => {
-      window.removeEventListener('resize', postHeight);
-    };
-  }, []);
-  useEffect(() => {
-    const sendHeight = () => {
-      const h = Math.max(
-        document.documentElement.scrollHeight,
-        document.body.scrollHeight
-      );
-      window.parent?.postMessage(
-        { type: 'LUXEN_IFRAME_HEIGHT', height: h },
-        '*'
-      );
-    };
-    sendHeight();
-    const ro = new ResizeObserver(sendHeight);
-    ro.observe(document.documentElement);
-    window.addEventListener('load', sendHeight);
-    window.addEventListener('resize', sendHeight);
-    const t = setInterval(sendHeight, 800);
-    return () => {
-      ro.disconnect();
-      window.removeEventListener('load', sendHeight);
-      window.removeEventListener('resize', sendHeight);
-      clearInterval(t);
-    };
-  }, []);
 
   // grid calendar
   const grid = useMemo(() => {
@@ -1360,6 +1324,8 @@ export default function Page() {
   const goBack = () => setStep((s) => Math.max(0, s - 1));
 
   return (
+    <>
+          <IframeHeightReporter />
     <div>
       <style jsx global>{`
         html,
@@ -2512,5 +2478,6 @@ export default function Page() {
         </div>
       )}
     </div>
+    </>
   );
 }

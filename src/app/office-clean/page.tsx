@@ -15,6 +15,9 @@ import {
   serverTimestamp,
 } from 'firebase/firestore';
 
+import { IframeHeightReporter } from '../IframeHeightReporter';
+
+
 // ========= AddressLookup (with postcode coverage check, aligned with home-clean) =========
 type AddressLookupProps = {
   onAddressSelect?: (addr: {
@@ -227,6 +230,7 @@ function AddressLookup({ onAddressSelect }: AddressLookupProps) {
   };
 
   return (
+    
     <div className="address-lookup-container mb-0">
       <div className="text-sm font-semibold text-[#0071bc] mb-3 pb-2 border-b border-gray-200">
         Site address
@@ -1326,6 +1330,8 @@ export default function Page() {
   const goBack = () => setStep((s) => Math.max(0, s - 1));
 
   return (
+    <>
+          <IframeHeightReporter />
     <div>
       <style jsx global>{`
         html,
@@ -2540,5 +2546,6 @@ export default function Page() {
         )}
       </div>
     </div>
+    </>
   );
 }
