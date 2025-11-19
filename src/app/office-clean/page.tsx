@@ -17,8 +17,39 @@ import {
 
 import { IframeHeightReporter } from '../IframeHeightReporter';
 
+import {
+  SizeId,
+  RoomItem,
+  WetRoomItem,
+  groupRoomSelections,
+  oneWetRoomItem,
+  formatRoomItems,
+  formatWetItems,
+  formatDuration,
+} from '@/lib/bookingTypes';
 
-// ========= AddressLookup (with postcode coverage check, aligned with home-clean) =========
+// ========= Phone normaliser =========
+function toE164UK(raw?: string | null): string | null {
+  if (!raw) return null;
+
+  const digits = raw.replace(/[^\d]/g, '');
+
+  if (digits.startsWith('0') && digits.length >= 10) {
+    return '+44' + digits.slice(1);
+  }
+
+  if (digits.startsWith('44')) {
+    return '+' + digits;
+  }
+
+  if (raw.trim().startsWith('+')) {
+    return raw.trim();
+  }
+
+  return '+' + digits;
+}
+
+// ========= AddressLookup (office copy, with postcode coverage check) =========
 type AddressLookupProps = {
   onAddressSelect?: (addr: {
     line1: string;
@@ -53,7 +84,7 @@ function AddressLookup({ onAddressSelect }: AddressLookupProps) {
     setError('');
   };
 
-  // Extract outward part (e.g. "M1", "M23") from a full postcode
+  // Extract outward part (e.g. "M1", "M23", "M17") from a full postcode
   const extractOutward = (raw: string): string | null => {
     const compact = raw.replace(/\s+/g, '').toUpperCase();
     if (compact.length < 5) return null;
@@ -230,7 +261,6 @@ function AddressLookup({ onAddressSelect }: AddressLookupProps) {
   };
 
   return (
-    
     <div className="address-lookup-container mb-0">
       <div className="text-sm font-semibold text-[#0071bc] mb-3 pb-2 border-b border-gray-200">
         Site address
@@ -543,11 +573,10 @@ const money = new Intl.NumberFormat('en-GB', {
   maximumFractionDigits: 2,
 });
 
-// ================= PRICING (Office – aligned with home) =================
+// ================= PRICING (Office – same logic as home) =================
 const HOURLY_RATE = 28;
 const MIN_HOURS = 2;
 const SUPPLIES_FEE = 5;
-// threshold lowered to 4 hours so >4h assigns 2 cleaners
 const TEAM_THRESHOLD_HOURS = 4;
 const TEAM_FACTOR = 1.7;
 function roundUpToHalf(x: number) {
@@ -616,7 +645,6 @@ const ADDON_PRICES = {
   cupboards: 0,
 };
 
-// approximate extra hours for each add-on
 const ADDON_HOURS = {
   fridge: 0.5,
   freezer: 0.75,
@@ -641,7 +669,7 @@ type ExtrasSummary = {
 };
 
 type RoomSummary = {
-  typeId: RoomTypeId;
+  typeId: RoomTypeId | 'kitchen' | 'bathroom';
   label: string;
   count: number;
   sizes: (SizeIdLocal | '')[];
@@ -655,15 +683,15 @@ type KitchenSummary = {
 type BathroomsSummary = {
   count: number;
   avgToiletsPerBathroom: number;
+  sizeId: SizeIdLocal | '';
 };
 
-type SubmittedBooking = {
+type BookingSummaryState = {
   orderId: string;
   bookingDate: string;
   bookingTime: string;
-  estimatedHours: number;
-  totalPrice: number;
-  serviceType: string;
+  bookingDisplayDate: string;
+  bookingDisplayTime: string;
   customerName: string;
   customerEmail: string;
   customerPhone: string;
@@ -674,6 +702,40 @@ type SubmittedBooking = {
     county: string;
     postcode: string;
   };
+  totalPrice: number;
+  estimatedHours: number;
+};
+
+type AllRoomsSummaryItem = {
+  typeId: string;
+  label: string;
+  count: number;
+  sizes: (SizeIdLocal | '')[];
+};
+
+// initial states
+const initialFormState = {
+  customerName: '',
+  customerEmail: '',
+  customerPhone: '',
+  cleanliness: '',
+  products: '',
+  additionalInfo: '',
+  addressLine1: '',
+  addressLine2: '',
+  town: '',
+  county: '',
+  postcode: '',
+  serviceType: 'Office Cleaning',
+  access: '',
+  keyLocation: '',
+};
+
+const initialExtras: ExtrasSummary = {
+  fridge: 0,
+  freezer: 0,
+  dishwasher: 0,
+  cupboards: 0,
 };
 
 export default function Page() {
@@ -694,80 +756,22 @@ export default function Page() {
   const [step, setStep] = useState<number>(0);
 
   // main form details
-  const [form, setForm] = useState({
-    customerName: '',
-    customerEmail: '',
-    customerPhone: '',
-    cleanliness: '',
-    products: '',
-    additionalInfo: '',
-    addressLine1: '',
-    addressLine2: '',
-    town: '',
-    county: '',
-    postcode: '',
-    serviceType: 'Office Cleaning',
-    access: '',
-    keyLocation: '',
-    frequency: '',
-  });
+  const [form, setForm] = useState(initialFormState);
 
-  // office structured inputs
+  // office-specific structured inputs
   const [roomsCount, setRoomsCount] = useState<number>(0);
   const [rooms, setRooms] = useState<OfficeRoom[]>([]);
   const [kitchensCount, setKitchensCount] = useState<number>(0);
   const [kitchenSizeId, setKitchenSizeId] = useState<SizeIdLocal | ''>('');
-  const [toiletRoomsCount, setToiletRoomsCount] = useState<number>(0);
-  const [avgCubicles, setAvgCubicles] = useState<number>(1);
-  const [toiletSizeId, setToiletSizeId] = useState<SizeIdLocal | ''>('');
-  const [extras, setExtras] = useState<ExtrasSummary>({
-    fridge: 0,
-    freezer: 0,
-    dishwasher: 0,
-    cupboards: 0,
-  });
+  const [bathroomsCount, setBathroomsCount] = useState<number>(0); // toilet rooms
+  const [bathroomSizeId, setBathroomSizeId] = useState<SizeIdLocal | ''>(''); // toilet room size
+  const [avgToilets, setAvgToilets] = useState<number>(1); // avg cubicles
+  const [extras, setExtras] = useState<ExtrasSummary>(initialExtras);
 
-  const [submittedBooking, setSubmittedBooking] =
-    useState<SubmittedBooking | null>(null);
-
-  // sizing & iframe behaviour
-  useEffect(() => {
-    function postHeight() {
-      const h =
-        document.documentElement.scrollHeight || document.body.scrollHeight;
-      parent.postMessage({ type: 'resize', height: h }, '*');
-    }
-    postHeight();
-    window.addEventListener('resize', postHeight);
-    new ResizeObserver(postHeight).observe(document.body);
-    return () => {
-      window.removeEventListener('resize', postHeight);
-    };
-  }, []);
-  useEffect(() => {
-    const sendHeight = () => {
-      const h = Math.max(
-        document.documentElement.scrollHeight,
-        document.body.scrollHeight
-      );
-      window.parent?.postMessage(
-        { type: 'LUXEN_IFRAME_HEIGHT', height: h },
-        '*'
-      );
-    };
-    sendHeight();
-    const ro = new ResizeObserver(sendHeight);
-    ro.observe(document.documentElement);
-    window.addEventListener('load', sendHeight);
-    window.addEventListener('resize', sendHeight);
-    const t = setInterval(sendHeight, 800);
-    return () => {
-      ro.disconnect();
-      window.removeEventListener('load', sendHeight);
-      window.removeEventListener('resize', sendHeight);
-      clearInterval(t);
-    };
-  }, []);
+  // booking completion state
+  const [bookingComplete, setBookingComplete] = useState(false);
+  const [lastBooking, setLastBooking] =
+    useState<BookingSummaryState | null>(null);
 
   // grid calendar
   const grid = useMemo(() => {
@@ -993,8 +997,8 @@ export default function Page() {
     const kitchenW = kitchenSizeId ? KITCHEN_SIZE_WEIGHT[kitchenSizeId] : 0;
     const kitchensHours = kitchensCount * kitchenW;
 
-    const totalCubicles = toiletRoomsCount * Math.max(1, avgCubicles);
-    const toiletsHours = totalCubicles * PER_CUBICLE_HOURS;
+    const totalToilets = bathroomsCount * Math.max(1, avgToilets);
+    const toiletsHours = totalToilets * PER_CUBICLE_HOURS;
 
     const addOnHours =
       (extras.fridge ?? 0) * ADDON_HOURS.fridge +
@@ -1042,15 +1046,15 @@ export default function Page() {
     rooms,
     kitchensCount,
     kitchenSizeId,
-    toiletRoomsCount,
-    avgCubicles,
+    bathroomsCount,
+    avgToilets,
     extras,
     form.cleanliness,
     form.products,
   ]);
 
-  // summaries (for breakdown)
-  const roomSummaries: RoomSummary[] = ROOM_TYPES.map((rt) => {
+  // simple summaries for display + storage
+  const baseRoomSummaries: RoomSummary[] = ROOM_TYPES.map((rt) => {
     const matching = rooms.filter((r) => r.typeId === rt.id);
     if (!matching.length) return null;
     return {
@@ -1067,9 +1071,44 @@ export default function Page() {
   };
 
   const bathroomsSummary: BathroomsSummary = {
-    count: toiletRoomsCount,
-    avgToiletsPerBathroom: avgCubicles,
+    count: bathroomsCount,
+    avgToiletsPerBathroom: avgToilets,
+    sizeId: bathroomSizeId || '',
   };
+
+  const roomSummaries: RoomSummary[] = [
+    ...baseRoomSummaries,
+    ...(kitchenSummary.count > 0
+      ? [
+          {
+            typeId: 'kitchen' as const,
+            label: 'Kitchen / tea point',
+            count: kitchenSummary.count,
+            sizes:
+              kitchenSummary.count > 0
+                ? Array(kitchenSummary.count).fill(
+                    kitchenSummary.sizeId || ''
+                  )
+                : [],
+          },
+        ]
+      : []),
+    ...(bathroomsSummary.count > 0
+      ? [
+          {
+            typeId: 'bathroom' as const,
+            label: 'Toilet room / cubicle',
+            count: bathroomsSummary.count,
+            sizes:
+              bathroomsSummary.count > 0
+                ? Array(bathroomsSummary.count).fill(
+                    bathroomsSummary.sizeId || ''
+                  )
+                : [],
+          },
+        ]
+      : []),
+  ];
 
   const extrasSummary: ExtrasSummary = {
     fridge: extras.fridge ?? 0,
@@ -1078,6 +1117,7 @@ export default function Page() {
     cupboards: extras.cupboards ?? 0,
   };
 
+  // whether to show actual quote vs initial message
   const hasQuoteInputs =
     !!form.cleanliness ||
     roomsCount > 0 ||
@@ -1100,7 +1140,6 @@ export default function Page() {
       alert('Please fill name, email, and phone.');
       return;
     }
-    // address required
     if (!form.addressLine1 || !form.town || !form.postcode) {
       alert('Please select or enter the site address.');
       return;
@@ -1110,6 +1149,27 @@ export default function Page() {
     const bookingDate = ymd(selectedDate);
     const bookingTime = `${selectedTime}:00`;
     const submittedAt = new Date().toISOString();
+
+    // Build full booking datetime
+    const bookingDateTime = new Date(selectedDate);
+    bookingDateTime.setHours(parseInt(selectedTime, 10), 0, 0, 0);
+
+    // Due date = 24h before the booking start
+    const dueDateTime = new Date(
+      bookingDateTime.getTime() - 24 * 60 * 60 * 1000
+    );
+    const dueDate = ymd(dueDateTime);
+
+    const normalisedPhone = toE164UK(form.customerPhone) || form.customerPhone;
+
+    // Pretty display strings for Zap
+    const bookingDatePrettyForZap = displayDate(selectedDate);
+    const bookingTimePrettyForZap = displayHour(selectedTime);
+    const dueDatePretty = displayDate(dueDateTime);
+
+    const endTime = addHoursToTime(bookingTime, pricing.estimatedHours ?? 1);
+
+    const serviceType = form.serviceType || 'Office Cleaning';
 
     const addOnsList: string[] = [];
     if ((extras.fridge ?? 0) > 0)
@@ -1128,36 +1188,103 @@ export default function Page() {
       return `Room ${i + 1} — ${rt}${label ? ` — ${label}` : ''}`;
     });
 
+    // keep legacy counts (they'll mostly be 0 for office, which is fine)
+    const roomTypeCounts = {
+      bedrooms: 0,
+      livingRooms: 0,
+      utilityRooms: 0,
+    };
+
+    for (const r of rooms) {
+      if (!r.typeId) continue;
+      switch (r.typeId) {
+        case 'bedroom':
+          roomTypeCounts.bedrooms += 1;
+          break;
+        case 'open-plan':
+          roomTypeCounts.livingRooms += 1;
+          break;
+        case 'storage':
+          roomTypeCounts.utilityRooms += 1;
+          break;
+        default:
+          break;
+      }
+    }
+
+    const roomSelections = roomSummaries.map((r) => ({
+      typeId: r.typeId,
+      count: r.count,
+      sizeId: r.sizes && r.sizes.length > 0 ? r.sizes[0] : '',
+    }));
+
+    const allRoomsSummary: AllRoomsSummaryItem[] = roomSummaries.map((r) => ({
+      typeId: r.typeId,
+      label: r.label,
+      count: r.count,
+      sizes: r.sizes,
+    }));
+
     const zapPayload = {
+      orderId,
+      submittedAt,
+
+      // customer details
       customerName: form.customerName,
       customerEmail: form.customerEmail,
-      customerPhone: form.customerPhone,
+      customerPhone: normalisedPhone,
+      // address
+      addressLine1: form.addressLine1,
+      addressLine2: form.addressLine2,
+      town: form.town,
+      county: form.county,
+      postcode: form.postcode,
+
+      // service
+      serviceType,
+      cleanliness: form.cleanliness,
+      products: form.products,
+      additionalInfo: form.additionalInfo,
+
+      // booking date/time
       bookingDate,
-      bookingTime,
-      orderId,
-      serviceType: form.serviceType,
+      bookingDatePretty: bookingDatePrettyForZap,
+      bookingTimeFrom: bookingTime,
+      bookingTimeFromPretty: bookingTimePrettyForZap,
+      bookingTimeTo: endTime,
+      estimatedHours: pricing.estimatedHours,
+      baseEstimatedHours: pricing.baseEstimatedHours,
+      twoCleaners: pricing.teamApplied,
+
+      // due date (24h before)
+      dueDate,
+      dueDatePretty,
+      dueDateTimeISO: dueDateTime.toISOString(),
+      bookingDateTimeISO: bookingDateTime.toISOString(),
+
+      // money
+      totalPrice: pricing.totalPrice,
+      totalPriceInPence: Math.round(pricing.totalPrice * 100),
       quoteAmount: pricing.totalPrice,
       quoteAmountInPence: Math.round(pricing.totalPrice * 100),
       quoteDate: bookingDate,
-      submittedAt,
-      bedrooms: '',
-      livingRooms: '',
-      kitchens: String(kitchensCount),
-      bathrooms: String(toiletRoomsCount),
-      cleanliness: form.cleanliness,
-      additionalRooms,
-      addOns: addOnsList,
-      estimatedHours: pricing.estimatedHours,
-      totalPrice: pricing.totalPrice,
-      additionalInfo: form.additionalInfo,
-      utilityRooms: '',
-      products: form.products,
-      twoCleaners: pricing.teamApplied,
-      baseEstimatedHours: pricing.baseEstimatedHours,
-      frequency: form.frequency || '',
-    };
 
-    const endTime = addHoursToTime(bookingTime, zapPayload.estimatedHours ?? 1);
+      // structure counts (legacy fields)
+      bedrooms: roomTypeCounts.bedrooms,
+      livingRooms: roomTypeCounts.livingRooms,
+      kitchens: kitchensCount,
+      bathrooms: bathroomsCount,
+      utilityRooms: roomTypeCounts.utilityRooms,
+
+      roomSelections,
+
+      additionalRooms,
+      roomsText: additionalRooms.join('\n'),
+      addOns: addOnsList,
+      addOnsText: addOnsList.length ? addOnsList.join('\n') : 'None',
+
+      allRoomsSummary,
+    };
 
     const {
       additionalRooms: _additionalRooms,
@@ -1172,6 +1299,7 @@ export default function Page() {
     await setDoc(doc(db, 'bookings', orderId), {
       ...zapForStorage,
       roomSummaries,
+      roomSelections,
       kitchenSummary,
       bathroomsSummary,
       extrasSummary,
@@ -1192,9 +1320,21 @@ export default function Page() {
       status: 'confirmed',
     });
 
-    // finances logging (same pattern as residential)
+    // finances logging + Zapier webhook
     try {
       const financesRef = collection(db, 'finances');
+
+      // trigger Zapier webhook with full booking payload
+      try {
+        await fetch('https://hooks.zapier.com/hooks/catch/22652608/uz20jhf/', {
+          method: 'POST',
+          mode: 'no-cors',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(zapPayload),
+        });
+      } catch (err) {
+        console.error('Failed to send Zapier webhook for booking', err);
+      }
 
       await addDoc(financesRef, {
         type: 'Income',
@@ -1222,14 +1362,15 @@ export default function Page() {
       console.error('Failed to log finances for booking', err);
     }
 
-    // store details for confirmation screen
-    setSubmittedBooking({
+    const bookingDisplayDate = displayDate(selectedDate);
+    const bookingDisplayTime = displayHour(selectedTime);
+
+    setLastBooking({
       orderId,
       bookingDate,
       bookingTime,
-      estimatedHours: pricing.estimatedHours,
-      totalPrice: pricing.totalPrice,
-      serviceType: form.serviceType,
+      bookingDisplayDate,
+      bookingDisplayTime,
       customerName: form.customerName,
       customerEmail: form.customerEmail,
       customerPhone: form.customerPhone,
@@ -1240,42 +1381,24 @@ export default function Page() {
         county: form.county,
         postcode: form.postcode,
       },
+      totalPrice: pricing.totalPrice,
+      estimatedHours: pricing.estimatedHours,
     });
 
     // reset form state
-    setStep(0);
+    setForm(initialFormState);
     setRoomsCount(0);
     setRooms([]);
     setKitchensCount(0);
     setKitchenSizeId('');
-    setToiletRoomsCount(0);
-    setAvgCubicles(1);
-    setToiletSizeId('');
-    setExtras({
-      fridge: 0,
-      freezer: 0,
-      dishwasher: 0,
-      cupboards: 0,
-    });
-    setSelectedTime('');
+    setBathroomsCount(0);
+    setBathroomSizeId('');
+    setAvgToilets(1);
+    setExtras(initialExtras);
     setSelectedDate(null);
-    setForm({
-      customerName: '',
-      customerEmail: '',
-      customerPhone: '',
-      cleanliness: '',
-      products: '',
-      additionalInfo: '',
-      addressLine1: '',
-      addressLine2: '',
-      town: '',
-      county: '',
-      postcode: '',
-      serviceType: 'Office Cleaning',
-      access: '',
-      keyLocation: '',
-      frequency: '',
-    });
+    setSelectedTime('');
+    setStep(0);
+    setBookingComplete(true);
   }
 
   // inputs/styles
@@ -1286,7 +1409,7 @@ export default function Page() {
     'text-sm font-semibold text-[#0071bc] mb-4 pb-3 border-b border-gray-200';
   const smallMuted = 'text-xs text-gray-600';
 
-  // step guards (sliding section only)
+  // step guards (now only for the sliding sections; contact/address is always visible)
   const canNext = useMemo(() => {
     if (step === 0) {
       return roomsCount >= 0 && !!form.cleanliness;
@@ -1300,11 +1423,11 @@ export default function Page() {
       return !!kitchenSizeId;
     }
     if (step === 3) {
-      if (toiletRoomsCount === 0) return true;
-      return !!toiletSizeId;
+      if (bathroomsCount === 0) return true;
+      return !!bathroomSizeId;
     }
     if (step === 4) {
-      return !!form.products;
+      return true;
     }
     if (step === 5) {
       return !!form.access && (form.access !== 'key' || !!form.keyLocation);
@@ -1316,8 +1439,8 @@ export default function Page() {
     rooms,
     kitchensCount,
     kitchenSizeId,
-    toiletRoomsCount,
-    toiletSizeId,
+    bathroomsCount,
+    bathroomSizeId,
     form.cleanliness,
     form.products,
     form.access,
@@ -1325,886 +1448,932 @@ export default function Page() {
   ]);
 
   const goNext = () => {
-    if (canNext) setStep((s) => Math.min(5, s + 1));
+    if (!canNext) return;
+
+    // On supplies/products step, show browser "please select" message
+    if (step === 4 && !form.products && typeof document !== 'undefined') {
+      const productsSelect = document.querySelector(
+        'select[name="products"]'
+      ) as HTMLSelectElement | null;
+      if (productsSelect) {
+        productsSelect.reportValidity();
+      }
+      return;
+    }
+
+    setStep((s) => Math.min(5, s + 1));
   };
+
   const goBack = () => setStep((s) => Math.max(0, s - 1));
 
   return (
     <>
-          <IframeHeightReporter />
-    <div>
-      <style jsx global>{`
-        html,
-        body,
-        #__next {
-          height: 100%;
-        }
-        body {
-          margin: 0;
-          background: transparent;
-        }
-        .container {
-          width: 100vw !important;
-          max-width: none !important;
-          min-height: 100vh !important;
-          padding: 2rem !important;
-          box-sizing: border-box;
-          font-size: 15px;
-          display: flex;
-          align-items: stretch;
-          justify-content: center;
-          background: transparent;
-        }
-        .forms-row {
-          display: flex !important;
-          flex-direction: row;
-          gap: 1.5rem !important;
-          align-items: stretch !important;
-          width: 100%;
-          max-width: 1600px;
-        }
-        @media (min-width: 900px) {
-          .calendar-container {
-            order: 0 !important;
-            flex: 0 0 38% !important;
-            max-width: 38% !important;
-            min-width: 360px !important;
-            height: auto;
-            display: flex;
-            flex-direction: column;
-            align-self: stretch;
-          }
-          .form-container {
-            order: 0 !important;
-            flex: 1 0 62% !important;
-            max-width: 62% !important;
-            min-width: 540px !important;
-            display: flex;
-            flex-direction: column;
-            align-self: stretch;
-          }
-          .fs-form {
-            display: flex;
-            flex-direction: column;
+      <IframeHeightReporter />
+      <div>
+        <style jsx global>{`
+          html,
+          body,
+          #__next {
             height: 100%;
-            overflow: visible;
           }
-        }
-        @media (max-width: 899px) {
-          .forms-row {
-            flex-direction: column !important;
+          body {
+            margin: 0;
+            background: transparent;
+          }
+          .container {
+            width: 100vw !important;
+            max-width: none !important;
+            min-height: 100vh !important;
+            padding: 2rem !important;
+            box-sizing: border-box;
+            font-size: 15px;
+            display: flex;
             align-items: stretch;
+            justify-content: center;
+            background: transparent;
           }
-          .calendar-container {
-            order: 0 !important;
-            width: 100% !important;
-            max-width: 100% !important;
+          .forms-row {
+            display: flex !important;
+            flex-direction: row;
+            gap: 1.5rem !important;
+            align-items: stretch !important;
+            width: 100%;
+            max-width: 1600px;
           }
-          .form-container {
-            order: 1 !important;
-            width: 100% !important;
-            max-width: 100% !important;
+          @media (min-width: 900px) {
+            .calendar-container {
+              order: 0 !important;
+              flex: 0 0 38% !important;
+              max-width: 38% !important;
+              min-width: 360px !important;
+              height: auto;
+              display: flex;
+              flex-direction: column;
+              align-self: stretch;
+            }
+            .form-container {
+              order: 0 !important;
+              flex: 1 0 62% !important;
+              max-width: 62% !important;
+              min-width: 540px !important;
+              display: flex;
+              flex-direction: column;
+              align-self: stretch;
+            }
+            .fs-form {
+              display: flex;
+              flex-direction: column;
+              height: 100%;
+              overflow: visible;
+            }
           }
-          .container {
-            padding: 1rem !important;
-          }
-        }
-        .date-cell {
-          aspect-ratio: 1 / 1;
-          min-width: 44px !important;
-          min-height: 44px !important;
-          display: inline-flex;
-          align-items: center;
-          justify-content: center;
-        }
-        .calendar-container .grid.grid-cols-7 {
-          grid-auto-rows: minmax(44px, 1fr);
-        }
-        .time-slots-grid button {
-          white-space: nowrap;
-          font-size: 12px;
-          line-height: 1;
-          padding-top: 0.45rem;
-          padding-bottom: 0.45rem;
-          overflow: hidden;
-          text-overflow: ellipsis;
-        }
-        .calendar-container {
-          align-self: stretch;
-        }
-        .calendar-container,
-        .form-container {
-          background: transparent !important;
-        }
-        .fs-form,
-        .time-slot-container {
-          background: transparent !important;
-        }
-        input,
-        select,
-        textarea {
-          background: #fff !important;
-        }
-        .calendar-container button {
-          background: ${UNAVAILABLE_BG} !important;
-          color: ${PRIMARY} !important;
-          font-weight: 500 !important;
-          height: 36px !important;
-        }
-        .calendar-container .text-sm {
-          font-weight: 500 !important;
-        }
-        .calendar-container.rounded-lg,
-        .fs-form.rounded-lg {
-          box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06);
-          background-clip: padding-box;
-        }
-        @media (min-width: 1200px) {
-          .container {
-            padding: 3rem !important;
+          @media (max-width: 899px) {
+            .forms-row {
+              flex-direction: column !important;
+              align-items: stretch;
+            }
+            .calendar-container {
+              order: 0 !important;
+              width: 100% !important;
+              max-width: 100% !important;
+            }
+            .form-container {
+              order: 1 !important;
+              width: 100% !important;
+              max-width: 100% !important;
+            }
+            .container {
+              padding: 1rem !important;
+            }
           }
           .date-cell {
-            min-width: 52px !important;
-            min-height: 52px !important;
+            aspect-ratio: 1 / 1;
+            min-width: 44px !important;
+            min-height: 44px !important;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
           }
-        }
-
-        @keyframes slideFadeIn {
-          from {
-            opacity: 0;
-            transform: translateX(24px);
+          .calendar-container .grid.grid-cols-7 {
+            grid-auto-rows: minmax(44px, 1fr);
           }
-          to {
-            opacity: 1;
-            transform: translateX(0);
+          .time-slots-grid button {
+            white-space: nowrap;
+            font-size: 12px;
+            line-height: 1;
+            padding-top: 0.45rem;
+            padding-bottom: 0.45rem;
+            overflow: hidden;
+            text-overflow: ellipsis;
           }
-        }
-        .step-anim {
-          animation: slideFadeIn 260ms ease forwards;
-          will-change: transform, opacity;
-        }
-
-        @keyframes fadeInSoft {
-          from {
-            opacity: 0;
-            transform: translateY(6px);
+          .calendar-container {
+            align-self: stretch;
           }
-          to {
-            opacity: 1;
-            transform: translateY(0);
+          .calendar-container,
+          .form-container {
+            background: transparent !important;
           }
-        }
-        .animate-fade-in {
-          animation: fadeInSoft 240ms ease-out;
-        }
-      `}</style>
+          .fs-form,
+          .time-slot-container {
+            background: transparent !important;
+          }
+          input,
+          select,
+          textarea {
+            background: #fff !important;
+          }
+          .calendar-container button {
+            background: ${UNAVAILABLE_BG} !important;
+            color: ${PRIMARY} !important;
+            font-weight: 500 !important;
+            height: 36px !important;
+          }
+          .calendar-container .text-sm {
+            font-weight: 500 !important;
+          }
+          .calendar-container.rounded-lg,
+          .fs-form.rounded-lg {
+            box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06);
+            background-clip: padding-box;
+          }
+          @media (min-width: 1200px) {
+            .container {
+              padding: 3rem !important;
+            }
+            .date-cell {
+              min-width: 52px !important;
+              min-height: 52px !important;
+            }
+          }
 
-      <div className="container">
-        {submittedBooking ? (
-          <div className="forms-row animate-fade-in">
-            {/* Left: booking details (taking calendar slot) */}
-            <aside className="calendar-container self-start w-full md:w-4/12 bg-white rounded-lg shadow-md p-5">
-              <div className="text-sm font-semibold mb-3 text-[#0071bc] border-b border-gray-200 pb-2">
-                Booking details
-              </div>
-              <div className="space-y-3 text-sm text-gray-800">
-                <div>
-                  <div className="text-xs text-gray-500 mb-0.5">Reference</div>
-                  <div className="font-mono text-sm">
-                    {submittedBooking.orderId}
-                  </div>
-                </div>
-                <div className="grid grid-cols-2 gap-2">
-                  <div>
-                    <div className="text-xs text-gray-500 mb-0.5">Date</div>
-                    <div className="font-medium">
-                      {displayDate(new Date(submittedBooking.bookingDate))}
-                    </div>
-                  </div>
-                  <div>
-                    <div className="text-xs text-gray-500 mb-0.5">
-                      Start time
-                    </div>
-                    <div className="font-medium">
-                      {displayHour(submittedBooking.bookingTime.split(':')[0])}
-                    </div>
-                  </div>
-                </div>
-                <div>
-                  <div className="text-xs text-gray-500 mb-0.5">Service</div>
-                  <div className="font-medium">
-                    {submittedBooking.serviceType}
-                  </div>
-                </div>
-                <div className="grid grid-cols-2 gap-2">
-                  <div>
-                    <div className="text-xs text-gray-500 mb-0.5">
-                      Estimated time
-                    </div>
-                    <div className="font-medium">
-                      {submittedBooking.estimatedHours} hours
-                    </div>
-                  </div>
-                  <div>
-                    <div className="text-xs text-gray-500 mb-0.5">
-                      Estimated total
-                    </div>
-                    <div className="font-semibold text-[#0071bc]">
-                      {money.format(submittedBooking.totalPrice)}
-                    </div>
-                  </div>
-                </div>
+          @keyframes slideFadeIn {
+            from {
+              opacity: 0;
+              transform: translateX(24px);
+            }
+            to {
+              opacity: 1;
+              transform: translateX(0);
+            }
+          }
+          .step-anim {
+            animation: slideFadeIn 260ms ease forwards;
+            will-change: transform, opacity;
+          }
 
-                <div className="pt-2 border-t border-gray-200">
-                  <div className="text-xs text-gray-500 mb-0.5">
-                    Contact person
-                  </div>
-                  <div className="font-medium">
-                    {submittedBooking.customerName || '—'}
-                  </div>
-                  <div className="text-xs text-gray-600">
-                    {submittedBooking.customerEmail}
-                  </div>
-                  <div className="text-xs text-gray-600">
-                    {submittedBooking.customerPhone}
-                  </div>
-                </div>
+          @keyframes fadeInSoft {
+            from {
+              opacity: 0;
+              transform: translateY(4px);
+            }
+            to {
+              opacity: 1;
+              transform: translateY(0);
+            }
+          }
+          .animate-fade-in {
+            animation: fadeInSoft 200ms ease-out;
+          }
+        `}</style>
 
-                <div className="pt-2 border-t border-gray-200">
-                  <div className="text-xs text-gray-500 mb-0.5">
-                    Site address
-                  </div>
-                  <div>{submittedBooking.address.line1}</div>
-                  {submittedBooking.address.line2 && (
-                    <div>{submittedBooking.address.line2}</div>
-                  )}
-                  <div>
-                    {submittedBooking.address.town}
-                    {submittedBooking.address.county
-                      ? `, ${submittedBooking.address.county}`
-                      : ''}
-                  </div>
-                  <div className="font-medium">
-                    {submittedBooking.address.postcode}
-                  </div>
-                </div>
-              </div>
-            </aside>
-
-            {/* Right: thank you content */}
-            <section className="form-container w-full md:w-8/12 self-start">
-              <div className="fs-form bg-white rounded-lg shadow-md p-6 animate-fade-in">
-                <div className="mb-4">
-                  <div className="text-xs font-semibold tracking-wide text-[#0071bc] uppercase">
-                    Booking received
-                  </div>
-                  <h1 className="text-2xl font-semibold text-gray-900 mt-1">
-                    Thank you for booking with Luxen Cleaning
-                  </h1>
-                  <p className="text-sm text-gray-700 mt-2">
-                    We&apos;ve sent a confirmation email with all of the
-                    details.
-                  </p>
-                </div>
-
-                <div className="mt-4 grid grid-cols-1 md:grid-cols-3 gap-3">
-                  <div className="rounded-xl border border-gray-100 bg-gray-50 p-3">
-                    <div className="text-xs font-semibold text-gray-700 mb-1">
-                      Step 1
-                    </div>
-                    <p className="text-sm text-gray-700">
-                      Check your email for your booking confirmation and payment
-                      link.
-                    </p>
-                  </div>
-                  <div className="rounded-xl border border-gray-100 bg-gray-50 p-3">
-                    <div className="text-xs font-semibold text-gray-700 mb-1">
-                      Step 2
-                    </div>
-                    <p className="text-sm text-gray-700">
-                      Make payment at least 24 hours before the clean to fully
-                      confirm your booking.
-                    </p>
-                  </div>
-                  <div className="rounded-xl border border-gray-100 bg-gray-50 p-3">
-                    <div className="text-xs font-semibold text-gray-700 mb-1">
-                      Step 3
-                    </div>
-                    <p className="text-sm text-gray-700">
-                      Your cleaner will arrive for the agreed time. Please make
-                      sure access and alarms are arranged.
-                    </p>
-                  </div>
-                </div>
-
-                <div className="mt-6 rounded-lg border border-[#0071bc]/15 bg-[#f5f9fc] px-4 py-3 text-xs text-gray-700">
-                  If you need to amend or cancel your booking, simply reply to
-                  the confirmation email and we&apos;ll be happy to help.
-                </div>
-              </div>
-            </section>
-          </div>
-        ) : (
-          <div className="forms-row">
-            {/* Calendar Container */}
-            <aside className="calendar-container self-start w-full md:w-4/12 bg-white rounded-lg shadow-md p-5">
-              <div>
-                {/* Calendar header */}
-                <div className="mb-3 flex items-center justify-between">
-                  <button
-                    className="rounded-md px-4 py-2 text-sm font-normal cursor-pointer hover:opacity-90"
-                    style={{ backgroundColor: UNAVAILABLE_BG, color: PRIMARY }}
-                    onClick={() =>
-                      setViewMonth(
-                        new Date(
-                          viewMonth.getFullYear(),
-                          viewMonth.getMonth() - 1,
-                          1
-                        )
-                      )
-                    }
-                    disabled={ymd(viewMonth) === ymd(startMonth)}
-                  >
-                    &lt; Prev
-                  </button>
-
+        {bookingComplete && lastBooking ? (
+          <div className="container">
+            <div className="forms-row">
+              {/* Left: booking summary (similar width as calendar) */}
+              <aside className="calendar-container self-start w-full md:w-4/12">
+                <div className="bg-white rounded-lg shadow-md p-5 animate-fade-in">
                   <div
-                    className="text-sm"
-                    style={{ color: PRIMARY, fontWeight: 400 }}
-                  >
-                    {monthNames[viewMonth.getMonth()]} {viewMonth.getFullYear()}
-                  </div>
-
-                  <button
-                    className="rounded-md px-4 py-2 text-sm font-normal cursor-pointer hover:opacity-90"
-                    style={{ backgroundColor: UNAVAILABLE_BG, color: PRIMARY }}
-                    onClick={() =>
-                      setViewMonth(
-                        new Date(
-                          viewMonth.getFullYear(),
-                          viewMonth.getMonth() + 1,
-                          1
-                        )
-                      )
-                    }
-                    disabled={
-                      viewMonth.getFullYear() === maxMonth.getFullYear() &&
-                      viewMonth.getMonth() === maxMonth.getMonth()
-                    }
-                  >
-                    Next &gt;
-                  </button>
-                </div>
-
-                <div
-                  className="grid grid-cols-7 gap-1 text-center text-[11px] font-medium"
-                  style={{ color: PRIMARY }}
-                >
-                  {weekdays.map((w) => (
-                    <div key={w} className="py-1">
-                      {w}
-                    </div>
-                  ))}
-                </div>
-
-                <div className="mt-2 grid grid-cols-7 gap-2">
-                  {grid.map((cell, i) => {
-                    const isSelected =
-                      cell.date &&
-                      selectedDate &&
-                      ymd(cell.date) === ymd(selectedDate);
-                    const isBeforeToday = cell.date
-                      ? new Date(
-                          cell.date.getFullYear(),
-                          cell.date.getMonth(),
-                          cell.date.getDate()
-                        ) < now
-                      : false;
-                    const isBlocked = cell.date
-                      ? blockedDates.has(ymd(cell.date)) || isBeforeToday
-                      : false;
-                    const base =
-                      'h-10 w-full rounded-md border text-[12px] flex items-center justify-center';
-                    const inactive = cell.muted
-                      ? ' border-gray-100 text-gray-300 bg-gray-50'
-                      : '';
-                    let styles: React.CSSProperties = {};
-                    let extraCls =
-                      ' cursor-pointer hover:opacity-90 text-white';
-
-                    if (cell.muted) {
-                      styles = {};
-                      extraCls = '';
-                    } else if (isBlocked) {
-                      styles = {
-                        backgroundColor: UNAVAILABLE_BG,
-                        borderColor: UNAVAILABLE_BG,
-                      };
-                      extraCls = ' text-gray-400 cursor-not-allowed';
-                    } else if (isSelected) {
-                      styles = { backgroundColor: PRIMARY, borderColor: PRIMARY };
-                    } else {
-                      styles = { backgroundColor: DATE_BG, borderColor: DATE_BG };
-                    }
-
-                    return (
-                      <div
-                        key={i}
-                        className={`${base} date-cell${inactive}${extraCls}`}
-                        style={styles}
-                        onClick={() => {
-                          if (cell.date && !isBlocked) setSelectedDate(cell.date!);
-                        }}
-                      >
-                        {cell.d || ''}
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-
-              <div className="time-slot-container mt-5 rounded-lg shadow-sm p-4 inline-block w-full">
-                {!selectedDate ? (
-                  <div className="text-xs text-gray-600">
-                    Please select a date first
-                  </div>
-                ) : (
-                  <>
-                    <h2
-                      className="text-lg font-semibold mb-3"
-                      style={{ color: PRIMARY }}
-                    >
-                      Select a time
-                    </h2>
-
-                    {timesLoading ? (
-                      <div className="p-3 text-center bg-gray-50 rounded-md">
-                        <span className="text-gray-500">Loading...</span>
-                      </div>
-                    ) : availableTimes.length === 0 ? (
-                      <div className="p-3 text-xs text-gray-600 rounded-md bg-gray-50">
-                        No times available for this date
-                      </div>
-                    ) : (
-                      <div className="time-slots-grid grid grid-cols-3 gap-2 md:gap-3">
-                        {availableTimes.map((t, idx) => {
-                          const isSelected = selectedTime === t;
-                          return (
-                            <button
-                              key={t + '-' + idx}
-                              type="button"
-                              onClick={() => setSelectedTime(t)}
-                              className={`p-3 text-center rounded-md text-xs cursor-pointer ${
-                                isSelected ? '' : 'hover:opacity-90'
-                              }`}
-                              style={{
-                                border: `1px solid ${
-                                  isSelected ? PRIMARY : '#e5e7eb'
-                                }`,
-                                backgroundColor: isSelected
-                                  ? 'rgba(0,113,188,0.08)'
-                                  : '#fff',
-                                color: isSelected ? PRIMARY : '#111827',
-                              }}
-                            >
-                              {displayHour(t)}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    )}
-                  </>
-                )}
-              </div>
-            </aside>
-
-            {/* Form Container */}
-            <section className="form-container w-full md:w-8/12 self-start">
-              <form
-                className="fs-form bg-white rounded-lg shadow-md p-6"
-                onSubmit={onSubmit}
-              >
-                {/* Selected Date Display */}
-                <div className="fs-field mb-4">
-                  <div
-                    className="selected-date text-sm font-medium"
+                    className="text-sm font-semibold mb-3"
                     style={{ color: PRIMARY }}
                   >
-                    {displayDate(selectedDate)}
+                    Booking details
                   </div>
-                </div>
 
-                {/* CONTACT INFO (always visible at top) */}
-                <div>
-                  <div className={sectionTitle}>Contact</div>
-                  <div className="mt-2 grid grid-cols-1 gap-3 md:grid-cols-2">
-                    <input
-                      className={input}
-                      name="customerName"
-                      placeholder="Company or contact name"
-                      value={form.customerName}
-                      onChange={(e) =>
-                        setForm((p) => ({ ...p, customerName: e.target.value }))
-                      }
-                      required
-                    />
-                    <input
-                      className={input}
-                      name="customerEmail"
-                      type="email"
-                      placeholder="Email"
-                      value={form.customerEmail}
-                      onChange={(e) =>
-                        setForm((p) => ({ ...p, customerEmail: e.target.value }))
-                      }
-                      required
-                    />
-                    <input
-                      className={`${input} md:col-span-2`}
-                      name="customerPhone"
-                      placeholder="Phone number"
-                      value={form.customerPhone}
-                      onChange={(e) =>
-                        setForm((p) => ({ ...p, customerPhone: e.target.value }))
-                      }
-                      required
-                    />
-                  </div>
-                </div>
+                  <div className="space-y-2 text-xs text-gray-700">
+                    <div>
+                      <div className="font-medium text-gray-900">Order ID</div>
+                      <div>{lastBooking.orderId}</div>
+                    </div>
 
-                {/* ADDRESS */}
-                <div className="mt-6">
-                  <AddressLookup
-                    onAddressSelect={(addr) =>
-                      setForm((prev) => ({
-                        ...prev,
-                        addressLine1: addr.line1 || '',
-                        addressLine2: addr.line2 || '',
-                        town: addr.town || '',
-                        county: addr.county || '',
-                        postcode: addr.postcode || '',
-                      }))
-                    }
-                  />
-                </div>
-
-                {/* Sliding multi-step section with stronger separation */}
-                <div
-                  key={`panel-${step}`}
-                  className="step-anim mt-6 rounded-lg border border-gray-300 bg-gray-50 px-4 py-4 md:px-5 md:py-5"
-                >
-                  {/* STEP 0: ROOMS & FOOTFALL */}
-                  {step === 0 && (
-                    <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                    <div>
+                      <div className="font-medium text-gray-900">
+                        Date & time
+                      </div>
                       <div>
-                        <label className="block text-sm font-medium text-gray-800 mb-1">
-                          Roughly how many rooms?
-                        </label>
-                        <select
-                          className={select}
-                          value={roomsCount}
-                          onChange={(e) =>
-                            setRoomsCount(
-                              Math.max(0, parseInt(e.target.value || '0', 10))
-                            )
-                          }
+                        {lastBooking.bookingDisplayDate} at{' '}
+                        {lastBooking.bookingDisplayTime}
+                      </div>
+                    </div>
+
+                    <div>
+                      <div className="font-medium text-gray-900">
+                        Contact details
+                      </div>
+                      <div>{lastBooking.customerName}</div>
+                      <div>{lastBooking.customerEmail}</div>
+                      <div>{lastBooking.customerPhone}</div>
+                    </div>
+
+                    <div>
+                      <div className="font-medium text-gray-900">
+                        Site address
+                      </div>
+                      <div>{lastBooking.address.line1}</div>
+                      {lastBooking.address.line2 && (
+                        <div>{lastBooking.address.line2}</div>
+                      )}
+                      <div>{lastBooking.address.town}</div>
+                      {lastBooking.address.county && (
+                        <div>{lastBooking.address.county}</div>
+                      )}
+                      <div>{lastBooking.address.postcode}</div>
+                    </div>
+                  </div>
+
+                  <div className="border-t border-gray-200 pt-3 mt-3 text-sm">
+                    <div className="flex items-center justify-between text-xs text-gray-700 mb-1">
+                      <span>Estimated time</span>
+                      <span>{lastBooking.estimatedHours} hours</span>
+                    </div>
+                    <div className="flex items-center justify-between font-semibold text-base text-gray-900">
+                      <span>Total price</span>
+                      <span>{money.format(lastBooking.totalPrice)}</span>
+                    </div>
+                  </div>
+                </div>
+              </aside>
+
+              {/* Right: thank-you message */}
+              <section className="form-container w-full md:w-8/12 self-start">
+                <div className="fs-form bg-white rounded-lg shadow-md p-6 animate-fade-in">
+                  <div
+                    className="text-lg font-semibold mb-1"
+                    style={{ color: PRIMARY }}
+                  >
+                    Thank you
+                    {lastBooking.customerName
+                      ? `, ${lastBooking.customerName}`
+                      : ''}
+                    !
+                  </div>
+                  <p className="text-sm text-gray-700 mb-4">
+                    Your office clean has been booked and is now awaiting
+                    payment.
+                  </p>
+
+                  <div className="grid gap-3">
+                    <div className="rounded-lg border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-800">
+                      <div className="font-semibold text-[#0071bc] mb-1">
+                        1. Check your email
+                      </div>
+                      <p className="text-xs text-gray-700">
+                        We&apos;ve sent a confirmation with all booking details
+                        and a secure payment link.
+                      </p>
+                    </div>
+
+                    <div className="rounded-lg border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-800">
+                      <div className="font-semibold text-[#0071bc] mb-1">
+                        2. Complete payment
+                      </div>
+                      <p className="text-xs text-gray-700">
+                        Please make payment at least 24 hours before your
+                        booking time to fully confirm the clean.
+                      </p>
+                    </div>
+
+                    <div className="rounded-lg border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-800">
+                      <div className="font-semibold text-[#0071bc] mb-1">
+                        3. On the day
+                      </div>
+                      <p className="text-xs text-gray-700">
+                        Your cleaner will arrive within the chosen time slot and
+                        follow any notes you&apos;ve provided about access and
+                        security.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="mt-5 text-xs text-gray-500">
+                    If anything looks incorrect, just reply to your
+                    confirmation email and we&apos;ll adjust it for you.
+                  </div>
+                </div>
+              </section>
+            </div>
+          </div>
+        ) : (
+          <div className="container">
+            <div className="forms-row">
+              {/* Calendar Container */}
+              <aside className="calendar-container self-start w-full md:w-4/12 bg-white rounded-lg shadow-md p-5">
+                <div>
+                  {/* Calendar header */}
+                  <div className="mb-3 flex items-center justify-between">
+                    <button
+                      className="rounded-md px-4 py-2 text-sm font-normal cursor-pointer hover:opacity-90"
+                      style={{
+                        backgroundColor: UNAVAILABLE_BG,
+                        color: PRIMARY,
+                      }}
+                      onClick={() =>
+                        setViewMonth(
+                          new Date(
+                            viewMonth.getFullYear(),
+                            viewMonth.getMonth() - 1,
+                            1
+                          )
+                        )
+                      }
+                      disabled={ymd(viewMonth) === ymd(startMonth)}
+                    >
+                      &lt; Prev
+                    </button>
+
+                    <div
+                      className="text-sm"
+                      style={{ color: PRIMARY, fontWeight: 400 }}
+                    >
+                      {monthNames[viewMonth.getMonth()]}{' '}
+                      {viewMonth.getFullYear()}
+                    </div>
+
+                    <button
+                      className="rounded-md px-4 py-2 text-sm font-normal cursor-pointer hover:opacity-90"
+                      style={{
+                        backgroundColor: UNAVAILABLE_BG,
+                        color: PRIMARY,
+                      }}
+                      onClick={() =>
+                        setViewMonth(
+                          new Date(
+                            viewMonth.getFullYear(),
+                            viewMonth.getMonth() + 1,
+                            1
+                          )
+                        )
+                      }
+                      disabled={
+                        viewMonth.getFullYear() === maxMonth.getFullYear() &&
+                        viewMonth.getMonth() === maxMonth.getMonth()
+                      }
+                    >
+                      Next &gt;
+                    </button>
+                  </div>
+
+                  <div
+                    className="grid grid-cols-7 gap-1 text-center text-[11px] font-medium"
+                    style={{ color: PRIMARY }}
+                  >
+                    {weekdays.map((w) => (
+                      <div key={w} className="py-1">
+                        {w}
+                      </div>
+                    ))}
+                  </div>
+
+                  <div className="mt-2 grid grid-cols-7 gap-2">
+                    {grid.map((cell, i) => {
+                      const isSelected =
+                        cell.date &&
+                        selectedDate &&
+                        ymd(cell.date) === ymd(selectedDate);
+                      const isBeforeToday = cell.date
+                        ? new Date(
+                            cell.date.getFullYear(),
+                            cell.date.getMonth(),
+                            cell.date.getDate()
+                          ) < now
+                        : false;
+                      const isBlocked = cell.date
+                        ? blockedDates.has(ymd(cell.date)) || isBeforeToday
+                        : false;
+                      const base =
+                        'h-10 w-full rounded-md border text-[12px] flex items-center justify-center';
+                      const inactive = cell.muted
+                        ? ' border-gray-100 text-gray-300 bg-gray-50'
+                        : '';
+                      let styles: React.CSSProperties = {};
+                      let extraCls =
+                        ' cursor-pointer hover:opacity-90 text-white';
+
+                      if (cell.muted) {
+                        styles = {};
+                        extraCls = '';
+                      } else if (isBlocked) {
+                        styles = {
+                          backgroundColor: UNAVAILABLE_BG,
+                          borderColor: UNAVAILABLE_BG,
+                        };
+                        extraCls = ' text-gray-400 cursor-not-allowed';
+                      } else if (isSelected) {
+                        styles = {
+                          backgroundColor: PRIMARY,
+                          borderColor: PRIMARY,
+                        };
+                      } else {
+                        styles = {
+                          backgroundColor: DATE_BG,
+                          borderColor: DATE_BG,
+                        };
+                      }
+
+                      return (
+                        <div
+                          key={i}
+                          className={`${base} date-cell${inactive}${extraCls}`}
+                          style={styles}
+                          onClick={() => {
+                            if (cell.date && !isBlocked)
+                              setSelectedDate(cell.date!);
+                          }}
                         >
-                          {[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 15, 20].map(
-                            (n) => (
+                          {cell.d || ''}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <div className="time-slot-container mt-5 rounded-lg shadow-sm p-4 inline-block w-full">
+                  {!selectedDate ? (
+                    <div className="text-xs text-gray-600">
+                      Please select a date first
+                    </div>
+                  ) : (
+                    <>
+                      <h2
+                        className="text-lg font-semibold mb-3"
+                        style={{ color: PRIMARY }}
+                      >
+                        Select a time
+                      </h2>
+
+                      {timesLoading ? (
+                        <div className="p-3 text-center bg-gray-50 rounded-md">
+                          <span className="text-gray-500">Loading...</span>
+                        </div>
+                      ) : availableTimes.length === 0 ? (
+                        <div className="p-3 text-xs text-gray-600 rounded-md bg-gray-50">
+                          No times available for this date
+                        </div>
+                      ) : (
+                        <div className="time-slots-grid grid grid-cols-3 gap-2 md:gap-3">
+                          {availableTimes.map((t, idx) => {
+                            const isSelected = selectedTime === t;
+                            return (
+                              <button
+                                key={t + '-' + idx}
+                                type="button"
+                                onClick={() => setSelectedTime(t)}
+                                className={`p-3 text-center rounded-md text-xs cursor-pointer ${
+                                  isSelected ? '' : 'hover:opacity-90'
+                                }`}
+                                style={{
+                                  border: `1px solid ${
+                                    isSelected ? PRIMARY : '#e5e7eb'
+                                  }`,
+                                  backgroundColor: isSelected
+                                    ? 'rgba(0,113,188,0.08)'
+                                    : '#fff',
+                                  color: isSelected ? PRIMARY : '#111827',
+                                }}
+                              >
+                                {displayHour(t)}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </>
+                  )}
+                </div>
+              </aside>
+
+              {/* Form Container */}
+              <section className="form-container w-full md:w-8/12 self-start">
+                <form
+                  className="fs-form bg-white rounded-lg shadow-md p-6"
+                  onSubmit={onSubmit}
+                >
+                  {/* Selected Date Display */}
+                  <div className="fs-field mb-4">
+                    <div
+                      className="selected-date text-sm font-medium"
+                      style={{ color: PRIMARY }}
+                    >
+                      {displayDate(selectedDate)}
+                    </div>
+                  </div>
+
+                  {/* CONTACT INFO (always visible at top) */}
+                  <div>
+                    <div className={sectionTitle}>Contact</div>
+                    <div className="mt-2 grid grid-cols-1 gap-3 md:grid-cols-2">
+                      <input
+                        className={input}
+                        name="customerName"
+                        placeholder="Company or contact name"
+                        value={form.customerName}
+                        onChange={(e) =>
+                          setForm((p) => ({
+                            ...p,
+                            customerName: e.target.value,
+                          }))
+                        }
+                        required
+                      />
+                      <input
+                        className={input}
+                        name="customerEmail"
+                        type="email"
+                        placeholder="Email"
+                        value={form.customerEmail}
+                        onChange={(e) =>
+                          setForm((p) => ({
+                            ...p,
+                            customerEmail: e.target.value,
+                          }))
+                        }
+                        required
+                      />
+                      <input
+                        className={`${input} md:col-span-2`}
+                        name="customerPhone"
+                        placeholder="Phone number"
+                        value={form.customerPhone}
+                        onChange={(e) =>
+                          setForm((p) => ({
+                            ...p,
+                            customerPhone: e.target.value,
+                          }))
+                        }
+                        required
+                      />
+                    </div>
+                  </div>
+
+                  {/* ADDRESS */}
+                  <div className="mt-6">
+                    <AddressLookup
+                      onAddressSelect={(addr) =>
+                        setForm((prev) => ({
+                          ...prev,
+                          addressLine1: addr.line1 || '',
+                          addressLine2: addr.line2 || '',
+                          town: addr.town || '',
+                          county: addr.county || '',
+                          postcode: addr.postcode || '',
+                        }))
+                      }
+                    />
+                  </div>
+
+                  {/* Sliding multi-step section with clearer separation */}
+                  <div
+                    key={`panel-${step}`}
+                    className="step-anim mt-6 rounded-lg border border-gray-200 bg-gray-50 px-4 py-4 md:px-5 md:py-5"
+                  >
+                    {/* STEP 0: ROOMS & FOOTFALL */}
+                    {step === 0 && (
+                      <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                        <div>
+                          <label className="block text-sm font-medium text-gray-800 mb-1">
+                            Roughly how many rooms?
+                          </label>
+                          <select
+                            className={select}
+                            value={roomsCount}
+                            onChange={(e) =>
+                              setRoomsCount(
+                                Math.max(
+                                  0,
+                                  parseInt(e.target.value || '0', 10)
+                                )
+                              )
+                            }
+                          >
+                            {[
+                              0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 15, 20,
+                            ].map((n) => (
                               <option key={n} value={n}>
                                 {n}
                               </option>
-                            )
-                          )}
-                        </select>
-                        <p className={smallMuted}>
-                          Include open-plan areas, meeting rooms, private
-                          offices, corridors and storage.
-                        </p>
-                      </div>
-                      <div>
-                        <label className="block text-sm font-medium text-gray-800 mb-1">
-                          Footfall level
-                        </label>
-                        <select
-                          className={select}
-                          value={form.cleanliness}
-                          onChange={(e) =>
-                            setForm((p) => ({ ...p, cleanliness: e.target.value }))
-                          }
-                          required
-                        >
-                          <option value="">Select</option>
-                          <option value="quite-clean">Low</option>
-                          <option value="average">Typical</option>
-                          <option value="quite-dirty">High</option>
-                          <option value="filthy">Very high</option>
-                        </select>
-                        <p className={smallMuted}>
-                          Used to adjust the time estimate.
-                        </p>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* STEP 1: ROOM DETAILS */}
-                  {step === 1 &&
-                    (roomsCount === 0 ? (
-                      <div className="text-sm text-gray-700">
-                        No extra room details to add — continue to kitchen and
-                        toilet details.
-                      </div>
-                    ) : (
-                      <div className="space-y-3">
-                        {rooms.map((r, idx) => (
-                          <div
-                            key={idx}
-                            className="border-gray-200 grid grid-cols-1 md:grid-cols-2 gap-3 border rounded-lg p-3 bg-white"
+                            ))}
+                          </select>
+                          <p className={smallMuted}>
+                            Include open-plan areas, meeting rooms, private
+                            offices, corridors and storage.
+                          </p>
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-800 mb-1">
+                            Footfall level
+                          </label>
+                          <select
+                            className={select}
+                            value={form.cleanliness}
+                            onChange={(e) =>
+                              setForm((p) => ({
+                                ...p,
+                                cleanliness: e.target.value,
+                              }))
+                            }
+                            required
                           >
-                            <div>
-                              <label className="block text-sm font-medium text-gray-800 mb-1">
-                                Room {idx + 1} — type
-                              </label>
-                              <select
-                                className={select}
-                                value={r.typeId}
-                                onChange={(e) => {
-                                  const val = e.target.value as RoomTypeId | '';
-                                  setRooms((prev) =>
-                                    prev.map((x, i) =>
-                                      i === idx ? { ...x, typeId: val } : x
-                                    )
-                                  );
-                                }}
-                              >
-                                <option value="">Select type</option>
-                                {ROOM_TYPES.map((rt) => (
-                                  <option key={rt.id} value={rt.id}>
-                                    {rt.label}
-                                  </option>
-                                ))}
-                              </select>
+                            <option value="">Select</option>
+                            <option value="quite-clean">Low</option>
+                            <option value="average">Typical</option>
+                            <option value="quite-dirty">High</option>
+                            <option value="filthy">Very high</option>
+                          </select>
+                          <p className={smallMuted}>
+                            Used to adjust the time estimate.
+                          </p>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* STEP 1: ROOM DETAILS */}
+                    {step === 1 &&
+                      (roomsCount === 0 ? (
+                        <div className="text-sm text-gray-700">
+                          No extra room details to add — continue to kitchen and
+                          toilet details.
+                        </div>
+                      ) : (
+                        <div className="space-y-3">
+                          {rooms.map((r, idx) => (
+                            <div
+                              key={idx}
+                              className="border-gray-200 grid grid-cols-1 md:grid-cols-2 gap-3 border rounded-lg p-3 bg-white"
+                            >
+                              <div>
+                                <label className="block text-sm font-medium text-gray-800 mb-1">
+                                  Room {idx + 1} — type
+                                </label>
+                                <select
+                                  className={select}
+                                  value={r.typeId}
+                                  onChange={(e) => {
+                                    const val =
+                                      e.target.value as RoomTypeId | '';
+                                    setRooms((prev) =>
+                                      prev.map((x, i) =>
+                                        i === idx ? { ...x, typeId: val } : x
+                                      )
+                                    );
+                                  }}
+                                >
+                                  <option value="">Select type</option>
+                                  {ROOM_TYPES.map((rt) => (
+                                    <option key={rt.id} value={rt.id}>
+                                      {rt.label}
+                                    </option>
+                                  ))}
+                                </select>
+                              </div>
+                              <div>
+                                <label className="block text-sm font-medium text-gray-800 mb-1">
+                                  Approx size
+                                </label>
+                                <select
+                                  className={select}
+                                  value={r.sizeId}
+                                  onChange={(e) => {
+                                    const val =
+                                      e.target.value as SizeIdLocal | '';
+                                    setRooms((prev) =>
+                                      prev.map((x, i) =>
+                                        i === idx ? { ...x, sizeId: val } : x
+                                      )
+                                    );
+                                  }}
+                                >
+                                  <option value="">Select</option>
+                                  {SIZE_OPTIONS.map((s) => (
+                                    <option key={s.id} value={s.id}>
+                                      {`${s.label} – ${s.hint}`}
+                                    </option>
+                                  ))}
+                                </select>
+                              </div>
                             </div>
-                            <div>
-                              <label className="block text-sm font-medium text-gray-800 mb-1">
-                                Approx size
-                              </label>
-                              <select
-                                className={select}
-                                value={r.sizeId}
-                                onChange={(e) => {
-                                  const val = e.target.value as
-                                    | SizeIdLocal
-                                    | '';
-                                  setRooms((prev) =>
-                                    prev.map((x, i) =>
-                                      i === idx ? { ...x, sizeId: val } : x
-                                    )
-                                  );
-                                }}
-                              >
-                                <option value="">Select</option>
-                                {SIZE_OPTIONS.map((s) => (
-                                  <option key={s.id} value={s.id}>
-                                    {`${s.label} – ${s.hint}`}
-                                  </option>
-                                ))}
-                              </select>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    ))}
-
-                  {/* STEP 2: KITCHENS */}
-                  {step === 2 && (
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                      <div>
-                        <label className="block text-sm font-medium text-gray-800 mb-1">
-                          How many kitchens / tea points?
-                        </label>
-                        <select
-                          className={select}
-                          value={kitchensCount}
-                          onChange={(e) =>
-                            setKitchensCount(
-                              Math.max(0, parseInt(e.target.value || '0', 10))
-                            )
-                          }
-                        >
-                          {[0, 1, 2, 3, 4, 5].map((n) => (
-                            <option key={n} value={n}>
-                              {n}
-                            </option>
                           ))}
-                        </select>
-                      </div>
-                      <div>
-                        <label className="block text-sm font-medium text-gray-800 mb-1">
-                          Typical size
-                        </label>
-                        <select
-                          className={select}
-                          value={kitchenSizeId}
-                          onChange={(e) =>
-                            setKitchenSizeId(e.target.value as SizeIdLocal | '')
-                          }
-                          disabled={kitchensCount === 0}
-                        >
-                          <option value="">Select</option>
-                          {SIZE_OPTIONS.map((s) => (
-                            <option key={s.id} value={s.id}>
-                              {`${s.label} – ${s.hint}`}
-                            </option>
-                          ))}
-                        </select>
-                        <p className={smallMuted}>Choose the closest range.</p>
-                      </div>
-                    </div>
-                  )}
+                        </div>
+                      ))}
 
-                  {/* STEP 3: TOILETS */}
-                  {step === 3 && (
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                      <div>
-                        <label className="block text-sm font-medium text-gray-800 mb-1">
-                          How many toilet rooms?
-                        </label>
-                        <select
-                          className={select}
-                          value={toiletRoomsCount}
-                          onChange={(e) =>
-                            setToiletRoomsCount(
-                              Math.max(0, parseInt(e.target.value || '0', 10))
-                            )
-                          }
-                        >
-                          {[0, 1, 2, 3, 4, 5, 6, 8, 10].map((n) => (
-                            <option key={n} value={n}>
-                              {n}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-
-                      <div>
-                        <label className="block text-sm font-medium text-gray-800 mb-1">
-                          Avg cubicles per toilet room
-                        </label>
-                        <select
-                          className={select}
-                          value={avgCubicles}
-                          onChange={(e) =>
-                            setAvgCubicles(
-                              Math.max(1, parseInt(e.target.value || '1', 10))
-                            )
-                          }
-                        >
-                          {[1, 2, 3, 4, 5, 6].map((n) => (
-                            <option key={n} value={n}>
-                              {n}
-                            </option>
-                          ))}
-                        </select>
-                        <p className={smallMuted}>
-                          We&apos;ll estimate{' '}
-                          {toiletRoomsCount * Math.max(1, avgCubicles)} cubicles
-                          in total.
-                        </p>
-                      </div>
-
-                      <div>
-                        <label className="block text-sm font-medium text-gray-800 mb-1">
-                          Typical toilet room size
-                        </label>
-                        <select
-                          className={select}
-                          value={toiletSizeId}
-                          onChange={(e) =>
-                            setToiletSizeId(e.target.value as SizeIdLocal | '')
-                          }
-                          disabled={toiletRoomsCount === 0}
-                        >
-                          <option value="">Select</option>
-                          {SIZE_OPTIONS.map((s) => (
-                            <option key={s.id} value={s.id}>
-                              {`${s.label} – ${s.hint}`}
-                            </option>
-                          ))}
-                        </select>
-                        <p className={smallMuted}>
-                          Use extra small for compact WC rooms / single
-                          cubicles.
-                        </p>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* STEP 4: EXTRAS & SUPPLIES */}
-                  {step === 4 && (
-                    <>
+                    {/* STEP 2: KITCHENS */}
+                    {step === 2 && (
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                        {[
-                          {
-                            key: 'fridge',
-                            label: 'Fridge clean',
-                            price: ADDON_PRICES.fridge,
-                          },
-                          {
-                            key: 'freezer',
-                            label: 'Freezer clean',
-                            price: ADDON_PRICES.freezer,
-                          },
-                          {
-                            key: 'dishwasher',
-                            label: 'Dishwasher load/unload',
-                            price: ADDON_PRICES.dishwasher,
-                          },
-                          {
-                            key: 'cupboards',
-                            label: 'Kitchen cupboards (count)',
-                            price: ADDON_PRICES.cupboards,
-                          },
-                        ].map((item) => (
-                          <div key={item.key}>
-                            <label className="block text-sm font-medium text-gray-800 mb-1">
-                              {item.label}{' '}
-                              {item.price
-                                ? `(+${money.format(item.price)} each)`
-                                : ''}
-                            </label>
-                            <select
-                              className={select}
-                              value={(extras as any)[item.key] ?? 0}
-                              onChange={(e) => {
-                                const val = Math.max(
+                        <div>
+                          <label className="block text-sm font-medium text-gray-800 mb-1">
+                            How many kitchens / tea points?
+                          </label>
+                          <select
+                            className={select}
+                            value={kitchensCount}
+                            onChange={(e) =>
+                              setKitchensCount(
+                                Math.max(
                                   0,
                                   parseInt(e.target.value || '0', 10)
-                                );
-                                setExtras((prev) => ({ ...prev, [item.key]: val }));
-                              }}
-                            >
-                              {[0, 1, 2, 3, 4, 5, 6, 8, 10].map((n) => (
-                                <option key={n} value={n}>
-                                  {n}
-                                </option>
-                              ))}
-                            </select>
-                          </div>
-                        ))}
-                      </div>
-
-                      <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-3">
+                                )
+                              )
+                            }
+                          >
+                            {[0, 1, 2, 3, 4, 5].map((n) => (
+                              <option key={n} value={n}>
+                                {n}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
                         <div>
+                          <label className="block text-sm font-medium text-gray-800 mb-1">
+                            Typical size
+                          </label>
+                          <select
+                            className={select}
+                            value={kitchenSizeId}
+                            onChange={(e) =>
+                              setKitchenSizeId(
+                                e.target.value as SizeIdLocal | ''
+                              )
+                            }
+                            disabled={kitchensCount === 0}
+                          >
+                            <option value="">Select</option>
+                            {SIZE_OPTIONS.map((s) => (
+                              <option key={s.id} value={s.id}>
+                                {`${s.label} – ${s.hint}`}
+                              </option>
+                            ))}
+                          </select>
+                          <p className={smallMuted}>
+                            Choose the closest range.
+                          </p>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* STEP 3: TOILETS (mapped onto bathrooms state) */}
+                    {step === 3 && (
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                        <div>
+                          <label className="block text-sm font-medium text-gray-800 mb-1">
+                            How many toilet rooms?
+                          </label>
+                          <select
+                            className={select}
+                            value={bathroomsCount}
+                            onChange={(e) =>
+                              setBathroomsCount(
+                                Math.max(
+                                  0,
+                                  parseInt(e.target.value || '0', 10)
+                                )
+                              )
+                            }
+                          >
+                            {[0, 1, 2, 3, 4, 5, 6, 8, 10].map((n) => (
+                              <option key={n} value={n}>
+                                {n}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+
+                        <div>
+                          <label className="block text-sm font-medium text-gray-800 mb-1">
+                            Avg cubicles per toilet room
+                          </label>
+                          <select
+                            className={select}
+                            value={avgToilets}
+                            onChange={(e) =>
+                              setAvgToilets(
+                                Math.max(
+                                  1,
+                                  parseInt(e.target.value || '1', 10)
+                                )
+                              )
+                            }
+                          >
+                            {[1, 2, 3, 4, 5, 6].map((n) => (
+                              <option key={n} value={n}>
+                                {n}
+                              </option>
+                            ))}
+                          </select>
+                          <p className={smallMuted}>
+                            We&apos;ll estimate{' '}
+                            {bathroomsCount * Math.max(1, avgToilets)} cubicles
+                            in total.
+                          </p>
+                        </div>
+
+                        <div>
+                          <label className="block text-sm font-medium text-gray-800 mb-1">
+                            Typical toilet room size
+                          </label>
+                          <select
+                            className={select}
+                            value={bathroomSizeId}
+                            onChange={(e) =>
+                              setBathroomSizeId(
+                                e.target.value as SizeIdLocal | ''
+                              )
+                            }
+                            disabled={bathroomsCount === 0}
+                          >
+                            <option value="">Select</option>
+                            {SIZE_OPTIONS.map((s) => (
+                              <option key={s.id} value={s.id}>
+                                {`${s.label} – ${s.hint}`}
+                              </option>
+                            ))}
+                          </select>
+                          <p className={smallMuted}>
+                            Use extra small for compact WC rooms / single
+                            cubicles.
+                          </p>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* STEP 4: EXTRAS & SUPPLIES */}
+                    {step === 4 && (
+                      <>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                          {[
+                            {
+                              key: 'fridge',
+                              label: 'Fridge clean',
+                              price: ADDON_PRICES.fridge,
+                            },
+                            {
+                              key: 'freezer',
+                              label: 'Freezer clean',
+                              price: ADDON_PRICES.freezer,
+                            },
+                            {
+                              key: 'dishwasher',
+                              label: 'Dishwasher load/unload',
+                              price: ADDON_PRICES.dishwasher,
+                            },
+                            {
+                              key: 'cupboards',
+                              label: 'Kitchen cupboards (count)',
+                              price: ADDON_PRICES.cupboards,
+                            },
+                          ].map((item) => (
+                            <div key={item.key}>
+                              <label className="block text-sm font-medium text-gray-800 mb-1">
+                                {item.label}{' '}
+                                {item.price
+                                  ? `(+${money.format(item.price)} each)`
+                                  : ''}
+                              </label>
+                              <select
+                                className={select}
+                                value={(extras as any)[item.key] ?? 0}
+                                onChange={(e) => {
+                                  const val = Math.max(
+                                    0,
+                                    parseInt(e.target.value || '0', 10)
+                                  );
+                                  setExtras((prev) => ({
+                                    ...prev,
+                                    [item.key]: val,
+                                  }));
+                                }}
+                              >
+                                {[0, 1, 2, 3, 4, 5, 6, 8, 10].map((n) => (
+                                  <option key={n} value={n}>
+                                    {n}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+                          ))}
+                        </div>
+
+                        <div className="mt-4">
                           <label className="mb-1 block text-xs font-medium text-gray-700">
-                            Supplies
+                            Supplies{' '}
+                            <span className="text-red-500">(Required)*</span>
                           </label>
                           <select
                             className={select}
                             name="products"
                             value={form.products}
                             onChange={(e) =>
-                              setForm((p) => ({ ...p, products: e.target.value }))
+                              setForm((p) => ({
+                                ...p,
+                                products: e.target.value,
+                              }))
                             }
                             required
                           >
@@ -2215,337 +2384,279 @@ export default function Page() {
                             <option value="customer">Use site supplies</option>
                           </select>
                         </div>
-                        <div>
-                          <label className="mb-1 block text-xs font-medium text-gray-700">
-                            Cleaning frequency
-                          </label>
-                          <select
-                            className={select}
-                            name="frequency"
-                            value={form.frequency}
-                            onChange={(e) =>
-                              setForm((p) => ({ ...p, frequency: e.target.value }))
-                            }
-                          >
-                            <option value="">One-off clean</option>
-                            <option value="weekly">Weekly</option>
-                            <option value="fortnightly">Fortnightly</option>
-                            <option value="monthly">Monthly</option>
-                          </select>
-                        </div>
-                      </div>
-                    </>
-                  )}
+                      </>
+                    )}
 
-                  {/* STEP 5: SITE & ACCESS */}
-                  {step === 5 && (
-                    <>
-                      <div className={sectionTitle}>Site &amp; access</div>
+                    {/* STEP 5: SITE & ACCESS */}
+                    {step === 5 && (
+                      <>
+                        <div className={sectionTitle}>Site &amp; access</div>
 
-                      <div className="grid grid-cols-1 gap-4 mt-2">
-                        <div className="fs-field">
-                          <label
-                            className="fs-label block text-gray-700 mb-1"
-                            htmlFor="access"
-                          >
-                            How will we access the site?
-                          </label>
-                          <select
-                            className="fs-select w-full p-2 rounded-lg"
-                            id="access"
-                            name="access"
-                            value={form.access || ''}
-                            onChange={(e) =>
-                              setForm((p) => ({ ...p, access: e.target.value }))
-                            }
-                            required
-                            style={{
-                              border: '1px solid #e6e6e6',
-                              fontWeight: 400,
-                              outline: 'none',
-                            }}
-                          >
-                            <option value="" disabled>
-                              Select access method
-                            </option>
-                            <option value="home">
-                              A member of staff will meet the cleaners
-                            </option>
-                            <option value="key">
-                              Key / fob will be left in a location
-                            </option>
-                          </select>
-                        </div>
-
-                        {form.access === 'key' && (
+                        <div className="grid grid-cols-1 gap-4 mt-2">
                           <div className="fs-field">
                             <label
-                              className="text-gray-700 fs-label block text-gray-700 mb-1"
-                              htmlFor="keyLocation"
+                              className="fs-label block text-gray-700 mb-1"
+                              htmlFor="access"
                             >
-                              Where will the key / fob be located?
+                              How will we access the site?
                             </label>
-                            <input
-                              className="fs-input w-full p-2 border rounded-lg"
-                              type="text"
-                              id="keyLocation"
-                              name="keyLocation"
-                              value={form.keyLocation || ''}
+                            <select
+                              className="fs-select w-full p-2 rounded-lg"
+                              id="access"
+                              name="access"
+                              value={form.access || ''}
                               onChange={(e) =>
                                 setForm((p) => ({
                                   ...p,
-                                  keyLocation: e.target.value,
+                                  access: e.target.value,
                                 }))
                               }
-                              placeholder="e.g., reception, lockbox (code), security desk…"
                               required
+                              style={{
+                                border: '1px solid #e6e6e6',
+                                fontWeight: 400,
+                                outline: 'none',
+                              }}
+                            >
+                              <option value="" disabled>
+                                Select access method
+                              </option>
+                              <option value="home">
+                                A member of staff will meet the cleaners
+                              </option>
+                              <option value="key">
+                                Key / fob will be left in a location
+                              </option>
+                            </select>
+                          </div>
+
+                          {form.access === 'key' && (
+                            <div className="fs-field">
+                              <label
+                                className="text-gray-700 fs-label block text-gray-700 mb-1"
+                                htmlFor="keyLocation"
+                              >
+                                Where will the key / fob be located?
+                              </label>
+                              <input
+                                className="fs-input w-full p-2 border rounded-lg"
+                                type="text"
+                                id="keyLocation"
+                                name="keyLocation"
+                                value={form.keyLocation || ''}
+                                onChange={(e) =>
+                                  setForm((p) => ({
+                                    ...p,
+                                    keyLocation: e.target.value,
+                                  }))
+                                }
+                                placeholder="e.g., reception, lockbox (code), security desk…"
+                                required
+                              />
+                            </div>
+                          )}
+
+                          <div className="fs-field">
+                            <label
+                              className="text-gray-700 fs-label block text-gray-700 mb-1"
+                              htmlFor="additionalInfo"
+                            >
+                              Anything else we should know?
+                            </label>
+                            <textarea
+                              id="additionalInfo"
+                              className={`${input} h-24`}
+                              value={form.additionalInfo}
+                              onChange={(e) =>
+                                setForm((p) => ({
+                                  ...p,
+                                  additionalInfo: e.target.value,
+                                }))
+                              }
+                              placeholder="Parking, alarm codes, security procedures, special instructions…"
                             />
+                          </div>
+                        </div>
+                      </>
+                    )}
+                  </div>
+
+                  {/* Navigation */}
+                  <div className="fs-button-group flex items-center justify-between gap-3 mt-6 mb-4">
+                    <button
+                      type="button"
+                      onClick={goBack}
+                      disabled={step === 0}
+                      className="rounded-lg px-4 py-3 border text-sm hover:opacity-90 disabled:opacity-60"
+                      style={{
+                        borderColor: '#e5e7eb',
+                        color: '#111827',
+                        background: '#fff',
+                      }}
+                    >
+                      Back
+                    </button>
+
+                    {step < 5 ? (
+                      <button
+                        type="button"
+                        onClick={goNext}
+                        disabled={!canNext}
+                        className="fs-button bg-[#0071bc] text-white font-medium py-3 px-6 rounded-lg hover:opacity-90 transition duration-200 disabled:opacity-60"
+                        style={{ backgroundColor: PRIMARY }}
+                      >
+                        Next
+                      </button>
+                    ) : (
+                      <button
+                        type="submit"
+                        className="fs-button bg-[#0071bc] text-white font-medium py-3 px-6 rounded-lg hover:opacity-90 transition duration-200"
+                        style={{ backgroundColor: PRIMARY }}
+                      >
+                        Book now — {money.format(pricing.totalPrice)}
+                      </button>
+                    )}
+                  </div>
+
+                  {/* Summary & price BELOW the form */}
+                  <div className="fs-price-breakdown bg-gray-50 p-4 rounded-lg mb-4 border border-gray-100 mt-2">
+                    <div className="font-semibold mb-2 text-sm text-gray-900">
+                      Summary &amp; price
+                    </div>
+
+                    {!hasQuoteInputs ? (
+                      <div className="text-xs text-gray-600 py-3 animate-fade-in">
+                        Enter a few details above to see an instant estimated
+                        time and price for your office clean.
+                      </div>
+                    ) : (
+                      <div className="space-y-3 animate-fade-in">
+                        {roomSummaries.length > 0 && (
+                          <div className="text-xs text-gray-700">
+                            <div className="font-medium mb-1">Rooms</div>
+                            <div className="space-y-1">
+                              {roomSummaries.map((r, idx) => {
+                                const sizeLabels = r.sizes
+                                  .filter(Boolean)
+                                  .map((sid) => {
+                                    const opt = SIZE_OPTIONS.find(
+                                      (s) => s.id === sid
+                                    );
+                                    return opt ? opt.label.toLowerCase() : sid;
+                                  });
+                                return (
+                                  <div
+                                    key={idx}
+                                    className="flex items-center justify-between rounded-md border border-gray-200 bg-white px-2.5 py-1.5"
+                                  >
+                                    <div className="pr-2">
+                                      <div className="text-[11px] font-medium text-gray-900">
+                                        {r.label}
+                                      </div>
+                                      {sizeLabels.length > 0 && (
+                                        <div className="text-[11px] text-gray-500">
+                                          Sizes: {sizeLabels.join(', ')}
+                                        </div>
+                                      )}
+                                    </div>
+                                    <div className="text-[11px] font-semibold text-gray-900">
+                                      × {r.count}
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
                           </div>
                         )}
 
-                        <div className="fs-field">
-                          <label
-                            className="text-gray-700 fs-label block text-gray-700 mb-1"
-                            htmlFor="additionalInfo"
-                          >
-                            Anything else we should know?
-                          </label>
-                          <textarea
-                            id="additionalInfo"
-                            className={`${input} h-24`}
-                            value={form.additionalInfo}
-                            onChange={(e) =>
-                              setForm((p) => ({
-                                ...p,
-                                additionalInfo: e.target.value,
-                              }))
-                            }
-                            placeholder="Parking, alarm codes, security procedures, special instructions…"
-                          />
-                        </div>
-                      </div>
-                    </>
-                  )}
-                </div>
-
-                {/* Navigation */}
-                <div className="fs-button-group flex items-center justify-between gap-3 mt-6 mb-4">
-                  <button
-                    type="button"
-                    onClick={goBack}
-                    disabled={step === 0}
-                    className="rounded-lg px-4 py-3 border text-sm hover:opacity-90 disabled:opacity-60"
-                    style={{
-                      borderColor: '#e5e7eb',
-                      color: '#111827',
-                      background: '#fff',
-                    }}
-                  >
-                    Back
-                  </button>
-
-                  {step < 5 ? (
-                    <button
-                      type="button"
-                      onClick={goNext}
-                      disabled={!canNext}
-                      className="fs-button bg-[#0071bc] text-white font-medium py-3 px-6 rounded-lg hover:opacity-90 transition duration-200 disabled:opacity-60"
-                      style={{ backgroundColor: PRIMARY }}
-                    >
-                      Next
-                    </button>
-                  ) : (
-                    <button
-                      type="submit"
-                      className="fs-button bg-[#0071bc] text-white font-medium py-3 px-6 rounded-lg hover:opacity-90 transition duration-200"
-                      style={{ backgroundColor: PRIMARY }}
-                    >
-                      Book now — {money.format(pricing.totalPrice)}
-                    </button>
-                  )}
-                </div>
-
-                {/* Summary & price BELOW the form */}
-                <div className="fs-price-breakdown bg-gray-50 p-4 rounded-lg mb-4 border border-gray-100 mt-2">
-                  <div className="font-semibold mb-2 text-sm text-gray-900">
-                    Summary &amp; price
-                  </div>
-
-                  {!hasQuoteInputs ? (
-                    <div className="text-xs text-gray-600 py-3 animate-fade-in">
-                      Enter a few details above to see an instant estimated time
-                      and price for your office clean.
-                    </div>
-                  ) : (
-                    <div className="space-y-3 animate-fade-in">
-                      {roomSummaries.length > 0 && (
-                        <div className="text-xs text-gray-700">
-                          <div className="font-medium mb-1">Rooms</div>
-                          <div className="space-y-1">
-                            {roomSummaries.map((r, idx) => {
-                              const sizeLabels = r.sizes
-                                .filter(Boolean)
-                                .map((sid) => {
-                                  const opt = SIZE_OPTIONS.find(
-                                    (s) => s.id === sid
-                                  );
-                                  return opt ? opt.label.toLowerCase() : sid;
-                                });
-                              return (
-                                <div
-                                  key={idx}
-                                  className="flex items-center justify-between rounded-md border border-gray-200 bg-white px-2.5 py-1.5"
-                                >
-                                  <div className="pr-2">
-                                    <div className="text-[11px] font-medium text-gray-900">
-                                      {r.label}
-                                    </div>
-                                    {sizeLabels.length > 0 && (
-                                      <div className="text-[11px] text-gray-500">
-                                        Sizes: {sizeLabels.join(', ')}
-                                      </div>
-                                    )}
-                                  </div>
-                                  <div className="text-[11px] font-semibold text-gray-900">
-                                    × {r.count}
-                                  </div>
-                                </div>
-                              );
-                            })}
-                          </div>
-                        </div>
-                      )}
-
-                      {kitchenSummary.count > 0 && (
-                        <div className="text-xs text-gray-700">
-                          <div className="font-medium mb-1">
-                            Kitchens / tea points
-                          </div>
-                          <div className="rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-[11px] text-gray-800 flex items-center justify-between">
-                            <span>
-                              {kitchenSummary.count} kitchen
-                              {kitchenSummary.count > 1 ? 's' : ''}
-                              {kitchenSummary.sizeId && (
-                                <>
-                                  {' '}
-                                  – typical size:{' '}
-                                  {
-                                    SIZE_OPTIONS.find(
-                                      (s) => s.id === kitchenSummary.sizeId
-                                    )?.label
-                                  }
-                                </>
+                        {(extrasSummary.fridge > 0 ||
+                          extrasSummary.freezer > 0 ||
+                          extrasSummary.dishwasher > 0 ||
+                          extrasSummary.cupboards > 0) && (
+                          <div className="text-xs text-gray-700">
+                            <div className="font-medium mb-1">Extras</div>
+                            <div className="flex flex-wrap gap-1">
+                              {extrasSummary.fridge > 0 && (
+                                <span className="inline-flex items-center rounded-full border border-gray-200 bg-white px-2 py-0.5 text-[11px]">
+                                  Fridge clean × {extrasSummary.fridge}
+                                </span>
                               )}
-                            </span>
+                              {extrasSummary.freezer > 0 && (
+                                <span className="inline-flex items-center rounded-full border border-gray-200 bg-white px-2 py-0.5 text-[11px]">
+                                  Freezer clean × {extrasSummary.freezer}
+                                </span>
+                              )}
+                              {extrasSummary.dishwasher > 0 && (
+                                <span className="inline-flex items-center rounded-full border border-gray-200 bg-white px-2 py-0.5 text-[11px]">
+                                  Dishwasher × {extrasSummary.dishwasher}
+                                </span>
+                              )}
+                              {extrasSummary.cupboards > 0 && (
+                                <span className="inline-flex items-center rounded-full border border-gray-200 bg-white px-2 py-0.5 text-[11px]">
+                                  Kitchen cupboards × {extrasSummary.cupboards}
+                                </span>
+                              )}
+                            </div>
                           </div>
-                        </div>
-                      )}
+                        )}
 
-                      {bathroomsSummary.count > 0 && (
-                        <div className="text-xs text-gray-700">
-                          <div className="font-medium mb-1">
-                            Toilet rooms / cubicles
+                        {form.cleanliness && (
+                          <div className="text-xs text-gray-700">
+                            <div className="font-medium mb-1">
+                              Footfall level
+                            </div>
+                            <div className="rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-[11px] text-gray-800 inline-block">
+                              {CLEAN_LABELS[form.cleanliness] ??
+                                form.cleanliness}
+                            </div>
                           </div>
-                          <div className="rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-[11px] text-gray-800">
-                            {bathroomsSummary.count} toilet room
-                            {bathroomsSummary.count > 1 ? 's' : ''} (avg{' '}
-                            {bathroomsSummary.avgToiletsPerBathroom} cubicle
-                            {bathroomsSummary.avgToiletsPerBathroom > 1
-                              ? 's'
-                              : ''}{' '}
-                            each)
-                          </div>
-                        </div>
-                      )}
+                        )}
 
-                      {(extrasSummary.fridge > 0 ||
-                        extrasSummary.freezer > 0 ||
-                        extrasSummary.dishwasher > 0 ||
-                        extrasSummary.cupboards > 0) && (
-                        <div className="text-xs text-gray-700">
-                          <div className="font-medium mb-1">Extras</div>
-                          <div className="flex flex-wrap gap-1">
-                            {extrasSummary.fridge > 0 && (
-                              <span className="inline-flex items-center rounded-full border border-gray-200 bg-white px-2 py-0.5 text-[11px]">
-                                Fridge clean × {extrasSummary.fridge}
-                              </span>
-                            )}
-                            {extrasSummary.freezer > 0 && (
-                              <span className="inline-flex items-center rounded-full border border-gray-200 bg-white px-2 py-0.5 text-[11px]">
-                                Freezer clean × {extrasSummary.freezer}
-                              </span>
-                            )}
-                            {extrasSummary.dishwasher > 0 && (
-                              <span className="inline-flex items-center rounded-full border border-gray-200 bg-white px-2 py-0.5 text-[11px]">
-                                Dishwasher × {extrasSummary.dishwasher}
-                              </span>
-                            )}
-                            {extrasSummary.cupboards > 0 && (
-                              <span className="inline-flex items-center rounded-full border border-gray-200 bg-white px-2 py-0.5 text-[11px]">
-                                Kitchen cupboards × {extrasSummary.cupboards}
-                              </span>
-                            )}
+                        {form.products && (
+                          <div className="text-xs text-gray-700">
+                            <div className="font-medium mb-1">Supplies</div>
+                            <div className="rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-[11px] text-gray-800 inline-block">
+                              {form.products === 'bring'
+                                ? `We bring our supplies (+${money.format(
+                                    SUPPLIES_FEE
+                                  )})`
+                                : 'Use site supplies'}
+                            </div>
                           </div>
-                        </div>
-                      )}
+                        )}
 
-                      {form.cleanliness && (
-                        <div className="text-xs text-gray-700">
-                          <div className="font-medium mb-1">
-                            Footfall level
+                        <div className="border-t border-gray-200 pt-3 mt-1 text-sm">
+                          <div className="flex items-center justify-between text-xs text-gray-700 mb-1">
+                            <span>Estimated time</span>
+                            <span>{pricing.estimatedHours} hours</span>
                           </div>
-                          <div className="rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-[11px] text-gray-800 inline-block">
-                            {CLEAN_LABELS[form.cleanliness] ??
-                              form.cleanliness}
+                          <div className="flex items-center justify-between font-semibold text-base text-gray-900">
+                            <span>Total price</span>
+                            <span>{money.format(pricing.totalPrice)}</span>
                           </div>
                         </div>
-                      )}
 
-                      {form.products && (
-                        <div className="text-xs text-gray-700">
-                          <div className="font-medium mb-1">Supplies</div>
-                          <div className="rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-[11px] text-gray-800 inline-block">
-                            {form.products === 'bring'
-                              ? `We bring our supplies (+${money.format(
-                                  SUPPLIES_FEE
-                                )})`
-                              : 'Use site supplies'}
+                        {pricing.teamApplied && (
+                          <div
+                            className="mt-3 rounded-md border px-3 py-2 text-xs"
+                            style={{
+                              backgroundColor: '#eef6ff',
+                              borderColor: '#dbeafe',
+                              color: PRIMARY,
+                            }}
+                          >
+                            ✓ Two cleaners may be assigned to this booking
                           </div>
-                        </div>
-                      )}
-
-                      <div className="border-t border-gray-200 pt-3 mt-1 text-sm">
-                        <div className="flex items-center justify-between text-xs text-gray-700 mb-1">
-                          <span>Estimated time</span>
-                          <span>{pricing.estimatedHours} hours</span>
-                        </div>
-                        <div className="flex items-center justify-between font-semibold text-base text-gray-900">
-                          <span>Total price</span>
-                          <span>{money.format(pricing.totalPrice)}</span>
-                        </div>
+                        )}
                       </div>
-
-                      {pricing.teamApplied && (
-                        <div
-                          className="mt-3 rounded-md border px-3 py-2 text-xs"
-                          style={{
-                            backgroundColor: '#eef6ff',
-                            borderColor: '#dbeafe',
-                            color: PRIMARY,
-                          }}
-                        >
-                          ✓ Two cleaners may be assigned to this booking
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </div>
-              </form>
-            </section>
+                    )}
+                  </div>
+                </form>
+              </section>
+            </div>
           </div>
         )}
       </div>
-    </div>
     </>
   );
 }
