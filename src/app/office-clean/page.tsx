@@ -276,7 +276,7 @@ function AddressLookup({ onAddressSelect }: AddressLookupProps) {
             Enter postcode
           </label>
           <input
-            className="fs-input w-full p-2 border rounded-lg"
+            className="fs-input w-full p-2 border border-gray-200 rounded-lg"
             type="text"
             id="postcode"
             name="postcode"
@@ -305,7 +305,7 @@ function AddressLookup({ onAddressSelect }: AddressLookupProps) {
             Select address
           </label>
           <select
-            className="fs-select w-full p-2 border rounded-lg"
+            className="fs-select w-full p-2 border border-gray-200 rounded-lg"
             id="address-select"
             onChange={handleAddressSelect}
             defaultValue=""
@@ -1053,8 +1053,9 @@ export default function Page() {
     form.products,
   ]);
 
-  // simple summaries for display + storage
-  const baseRoomSummaries: RoomSummary[] = ROOM_TYPES.map((rt) => {
+// simple summaries for display + storage
+const baseRoomSummaries = ROOM_TYPES
+  .map((rt) => {
     const matching = rooms.filter((r) => r.typeId === rt.id);
     if (!matching.length) return null;
     return {
@@ -1062,8 +1063,10 @@ export default function Page() {
       label: rt.label,
       count: matching.length,
       sizes: matching.map((r) => r.sizeId),
-    };
-  }).filter((x): x is RoomSummary => x !== null);
+    } as RoomSummary;
+  })
+  .filter((r): r is RoomSummary => r !== null);
+
 
   const kitchenSummary: KitchenSummary = {
     count: kitchensCount,
@@ -1188,29 +1191,46 @@ export default function Page() {
       return `Room ${i + 1} — ${rt}${label ? ` — ${label}` : ''}`;
     });
 
-    // keep legacy counts (they'll mostly be 0 for office, which is fine)
-    const roomTypeCounts = {
-      bedrooms: 0,
-      livingRooms: 0,
-      utilityRooms: 0,
-    };
+ // Office-specific room counts – only create keys for rooms that exist
+const officeRoomCounts: {
+  openPlan?: number;
+  meetingRooms?: number;
+  privateOffices?: number;
+  receptions?: number;
+  corridors?: number;
+  storageRooms?: number;
+} = {};
 
-    for (const r of rooms) {
-      if (!r.typeId) continue;
-      switch (r.typeId) {
-        case 'bedroom':
-          roomTypeCounts.bedrooms += 1;
-          break;
-        case 'open-plan':
-          roomTypeCounts.livingRooms += 1;
-          break;
-        case 'storage':
-          roomTypeCounts.utilityRooms += 1;
-          break;
-        default:
-          break;
-      }
-    }
+for (const r of rooms) {
+  if (!r.typeId) continue;
+  switch (r.typeId) {
+    case 'open-plan':
+      officeRoomCounts.openPlan = (officeRoomCounts.openPlan ?? 0) + 1;
+      break;
+    case 'meeting':
+      officeRoomCounts.meetingRooms =
+        (officeRoomCounts.meetingRooms ?? 0) + 1;
+      break;
+    case 'private-office':
+      officeRoomCounts.privateOffices =
+        (officeRoomCounts.privateOffices ?? 0) + 1;
+      break;
+    case 'reception':
+      officeRoomCounts.receptions =
+        (officeRoomCounts.receptions ?? 0) + 1;
+      break;
+    case 'corridor':
+      officeRoomCounts.corridors =
+        (officeRoomCounts.corridors ?? 0) + 1;
+      break;
+    case 'storage':
+      officeRoomCounts.storageRooms =
+        (officeRoomCounts.storageRooms ?? 0) + 1;
+      break;
+  }
+}
+
+    
 
     const roomSelections = roomSummaries.map((r) => ({
       typeId: r.typeId,
@@ -1224,6 +1244,7 @@ export default function Page() {
       count: r.count,
       sizes: r.sizes,
     }));
+
 
     const zapPayload = {
       orderId,
@@ -1269,12 +1290,12 @@ export default function Page() {
       quoteAmountInPence: Math.round(pricing.totalPrice * 100),
       quoteDate: bookingDate,
 
-      // structure counts (legacy fields)
-      bedrooms: roomTypeCounts.bedrooms,
-      livingRooms: roomTypeCounts.livingRooms,
-      kitchens: kitchensCount,
-      bathrooms: bathroomsCount,
-      utilityRooms: roomTypeCounts.utilityRooms,
+// office room breakdown – only added when present
+...officeRoomCounts,
+...(kitchensCount > 0 ? { kitchens: kitchensCount } : {}),
+...(bathroomsCount > 0 ? { bathrooms: bathroomsCount } : {}),
+
+
 
       roomSelections,
 
@@ -1288,14 +1309,9 @@ export default function Page() {
 
     const {
       additionalRooms: _additionalRooms,
-      bedrooms: _bedrooms,
-      livingRooms: _livingRooms,
-      kitchens: _kitchens,
-      bathrooms: _bathrooms,
-      utilityRooms: _utilityRooms,
       ...zapForStorage
     } = zapPayload;
-
+    
     await setDoc(doc(db, 'bookings', orderId), {
       ...zapForStorage,
       roomSummaries,

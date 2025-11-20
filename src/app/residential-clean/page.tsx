@@ -280,7 +280,7 @@ function AddressLookup({ onAddressSelect }: AddressLookupProps) {
             Enter Postcode
           </label>
           <input
-            className="fs-input w-full p-2 border rounded-lg"
+            className="fs-input w-full p-2 border border-gray-200 rounded-lg"
             type="text"
             id="postcode"
             name="postcode"
@@ -309,7 +309,7 @@ function AddressLookup({ onAddressSelect }: AddressLookupProps) {
             Select Address
           </label>
           <select
-            className="fs-select w-full p-2 border rounded-lg"
+            className="fs-select w-full p-2 border border-gray-200 rounded-lg"
             id="address-select"
             onChange={handleAddressSelect}
             defaultValue=""
@@ -607,7 +607,7 @@ const SIZE_OPTIONS: {
 const ROOM_TYPES: { id: RoomTypeId; label: string; multiplier: number }[] = [
   { id: 'open-plan', label: 'Living room', multiplier: 1.2 },
   { id: 'bedroom', label: 'Bedroom', multiplier: 1.0 },
-  { id: 'reception', label: 'Hallway / landing', multiplier: 0.9 },
+  { id: 'reception', label: 'Hallway / Corridor', multiplier: 0.9 },
   { id: 'storage', label: 'Storage / utility', multiplier: 0.6 },
 ];
 
@@ -1051,8 +1051,9 @@ export default function Page() {
     form.products,
   ]);
 
-  // simple summaries for display + storage
-  const baseRoomSummaries: RoomSummary[] = ROOM_TYPES.map((rt) => {
+// simple summaries for display + storage
+const baseRoomSummaries = ROOM_TYPES
+  .map((rt) => {
     const matching = rooms.filter((r) => r.typeId === rt.id);
     if (!matching.length) return null;
     return {
@@ -1060,8 +1061,10 @@ export default function Page() {
       label: rt.label,
       count: matching.length,
       sizes: matching.map((r) => r.sizeId),
-    };
-  }).filter((x): x is RoomSummary => x !== null);
+    } as RoomSummary;
+  })
+  .filter((r): r is RoomSummary => r !== null);
+
 
   const kitchenSummary: KitchenSummary = {
     count: kitchensCount,
@@ -1188,28 +1191,35 @@ export default function Page() {
       return `Room ${i + 1} — ${rt}${label ? ` — ${label}` : ''}`;
     });
 
-    const roomTypeCounts = {
-      bedrooms: 0,
-      livingRooms: 0,
-      utilityRooms: 0,
-    };
+// Only create keys for room types that actually exist
+type RoomTypeCounts = {
+  bedrooms?: number;
+  livingRooms?: number;
+  utilityRooms?: number;
+  corridors?: number; // Hallways / corridors
+};
 
-    for (const r of rooms) {
-      if (!r.typeId) continue;
-      switch (r.typeId) {
-        case 'bedroom':
-          roomTypeCounts.bedrooms += 1;
-          break;
-        case 'open-plan':
-          roomTypeCounts.livingRooms += 1;
-          break;
-        case 'storage':
-          roomTypeCounts.utilityRooms += 1;
-          break;
-        default:
-          break;
-      }
-    }
+const roomTypeCounts: RoomTypeCounts = {};
+
+for (const r of rooms) {
+  if (!r.typeId) continue;
+  switch (r.typeId) {
+    case 'bedroom':
+      roomTypeCounts.bedrooms = (roomTypeCounts.bedrooms ?? 0) + 1;
+      break;
+    case 'open-plan':
+      roomTypeCounts.livingRooms = (roomTypeCounts.livingRooms ?? 0) + 1;
+      break;
+    case 'storage':
+      roomTypeCounts.utilityRooms = (roomTypeCounts.utilityRooms ?? 0) + 1;
+      break;
+    case 'reception': // "Hallway / Corridor" in your UI
+      roomTypeCounts.corridors = (roomTypeCounts.corridors ?? 0) + 1;
+      break;
+  }
+}
+
+    
 
     // roomSelections for admin – includes kitchens & bathrooms via roomSummaries
     const roomSelections = roomSummaries.map((r) => ({
@@ -1272,12 +1282,12 @@ export default function Page() {
       quoteAmountInPence: Math.round(pricing.totalPrice * 100),
       quoteDate: bookingDate,
 
-      // structure counts
-      bedrooms: roomTypeCounts.bedrooms,
-      livingRooms: roomTypeCounts.livingRooms,
-      kitchens: kitchensCount,
-      bathrooms: bathroomsCount,
-      utilityRooms: roomTypeCounts.utilityRooms,
+ // structure counts – only included if they exist
+...roomTypeCounts,
+...(kitchensCount > 0 ? { kitchens: kitchensCount } : {}),
+...(bathroomsCount > 0 ? { bathrooms: bathroomsCount } : {}),
+
+      
 
       roomSelections,
 
