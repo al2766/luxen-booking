@@ -1,7 +1,7 @@
 // src/app/office-clean/page.tsx
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, useRef } from 'react';
 import { db } from '@/lib/firebase';
 import {
   collection,
@@ -17,16 +17,6 @@ import {
 
 import { IframeHeightReporter } from '../IframeHeightReporter';
 
-import {
-  SizeId,
-  RoomItem,
-  WetRoomItem,
-  groupRoomSelections,
-  oneWetRoomItem,
-  formatRoomItems,
-  formatWetItems,
-  formatDuration,
-} from '@/lib/bookingTypes';
 
 // ========= Phone normaliser =========
 function toE164UK(raw?: string | null): string | null {
@@ -261,8 +251,8 @@ function AddressLookup({ onAddressSelect }: AddressLookupProps) {
   };
 
   return (
-    <div className="address-lookup-container mb-0">
-      <div className="text-sm font-semibold text-[#0071bc] mb-3 pb-2 border-b border-gray-200">
+    <div className="address-lookup-container rounded-2xl border border-gray-200 border border-[#e0e6ed]
+  rounded-md shadow-[4px_6px_10px_-3px_#bfc9d4] p-4 sm:p-5">      <div className="text-lg font-semibold text-[#0071bc] mb-3 pb-2 border-b border-gray-200">
         Site address
       </div>
 
@@ -574,8 +564,17 @@ const money = new Intl.NumberFormat('en-GB', {
 });
 
 // ================= PRICING (Office – same logic as home) =================
-const HOURLY_RATE = 28;
+// ================= PRICING =================
+const WEEKDAY_HOURLY_RATE = 30;
+const WEEKEND_HOURLY_RATE = 32;
 const MIN_HOURS = 2;
+
+function isWeekend(date: Date | null): boolean {
+  if (!date) return false;
+  const day = date.getDay(); // 0 = Sunday, 6 = Saturday
+  return day === 0 || day === 6;
+}
+
 const SUPPLIES_FEE = 5;
 const TEAM_THRESHOLD_HOURS = 4;
 const TEAM_FACTOR = 1.7;
@@ -591,7 +590,9 @@ type RoomTypeId =
   | 'private-office'
   | 'reception'
   | 'corridor'
-  | 'storage';
+  | 'storage'
+  | 'kitchen'
+  | 'bathroom';
 
 const SIZE_OPTIONS: {
   id: SizeIdLocal;
@@ -607,12 +608,14 @@ const SIZE_OPTIONS: {
 ];
 
 const ROOM_TYPES: { id: RoomTypeId; label: string; multiplier: number }[] = [
-  { id: 'open-plan', label: 'Open-plan area', multiplier: 1.2 },
-  { id: 'meeting', label: 'Meeting room', multiplier: 1.0 },
-  { id: 'private-office', label: 'Private office', multiplier: 0.8 },
-  { id: 'reception', label: 'Reception', multiplier: 0.9 },
-  { id: 'corridor', label: 'Corridor', multiplier: 0.5 },
-  { id: 'storage', label: 'Storage / copy room', multiplier: 0.6 },
+  { id: 'open-plan', label: 'Open-plan area', multiplier: 1.4 },
+  { id: 'meeting', label: 'Meeting room', multiplier: 1.2 },
+  { id: 'private-office', label: 'Private office', multiplier: 1.0 },
+  { id: 'reception', label: 'Reception', multiplier: 1.1 },
+  { id: 'corridor', label: 'Corridor', multiplier: 0.7 },
+  { id: 'storage', label: 'Storage / copy room', multiplier: 0.8 },
+  { id: 'kitchen', label: 'Kitchen / tea point', multiplier: 1.3 },
+  { id: 'bathroom', label: 'Toilet room', multiplier: 1.2 },
 ];
 
 const CLEAN_MULTIPLIER: Record<string, number> = {
@@ -630,13 +633,6 @@ const CLEAN_LABELS: Record<string, string> = {
 };
 
 const PER_CUBICLE_HOURS = 0.35; // per cubicle
-const KITCHEN_SIZE_WEIGHT: Record<SizeIdLocal, number> = {
-  xs: 0.3,
-  s: 0.5,
-  m: 0.8,
-  l: 1.1,
-  xl: 1.6,
-};
 
 const ADDON_PRICES = {
   fridge: 20,
@@ -673,17 +669,6 @@ type RoomSummary = {
   label: string;
   count: number;
   sizes: (SizeIdLocal | '')[];
-};
-
-type KitchenSummary = {
-  count: number;
-  sizeId: SizeIdLocal | '';
-};
-
-type BathroomsSummary = {
-  count: number;
-  avgToiletsPerBathroom: number;
-  sizeId: SizeIdLocal | '';
 };
 
 type BookingSummaryState = {
@@ -755,17 +740,23 @@ export default function Page() {
   // stepper
   const [step, setStep] = useState<number>(0);
 
+  // ref for sliding section (scroll on back/next)
+  const stepSectionRef = useRef<HTMLDivElement | null>(null);
+  const scrollToStepTop = () => {
+    if (stepSectionRef.current) {
+      stepSectionRef.current.scrollIntoView({
+        behavior: 'smooth',
+        block: 'start',
+      } as ScrollIntoViewOptions);
+    }
+  };
+
   // main form details
   const [form, setForm] = useState(initialFormState);
 
   // office-specific structured inputs
   const [roomsCount, setRoomsCount] = useState<number>(0);
   const [rooms, setRooms] = useState<OfficeRoom[]>([]);
-  const [kitchensCount, setKitchensCount] = useState<number>(0);
-  const [kitchenSizeId, setKitchenSizeId] = useState<SizeIdLocal | ''>('');
-  const [bathroomsCount, setBathroomsCount] = useState<number>(0); // toilet rooms
-  const [bathroomSizeId, setBathroomSizeId] = useState<SizeIdLocal | ''>(''); // toilet room size
-  const [avgToilets, setAvgToilets] = useState<number>(1); // avg cubicles
   const [extras, setExtras] = useState<ExtrasSummary>(initialExtras);
 
   // booking completion state
@@ -806,6 +797,18 @@ export default function Page() {
       return next;
     });
   }, [roomsCount]);
+
+  // scroll to the step section when step changes (Back & Next)
+  useEffect(() => {
+    scrollToStepTop();
+  }, [step]);
+
+  // scroll to top on thank-you view
+  useEffect(() => {
+    if (bookingComplete && typeof window !== 'undefined') {
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+  }, [bookingComplete]);
 
   // compute blocked days
   useEffect(() => {
@@ -994,11 +997,12 @@ export default function Page() {
       const typeM = ROOM_TYPES.find((t) => t.id === r.typeId)?.multiplier ?? 0;
       roomHours += sizeW * typeM;
     }
-    const kitchenW = kitchenSizeId ? KITCHEN_SIZE_WEIGHT[kitchenSizeId] : 0;
-    const kitchensHours = kitchensCount * kitchenW;
 
-    const totalToilets = bathroomsCount * Math.max(1, avgToilets);
-    const toiletsHours = totalToilets * PER_CUBICLE_HOURS;
+    // extra allowance for toilets (assume ~1 cubicle per toilet room)
+    const bathroomsCountForTime = rooms.filter(
+      (r) => r.typeId === 'bathroom'
+    ).length;
+    const toiletsHours = bathroomsCountForTime * PER_CUBICLE_HOURS;
 
     const addOnHours =
       (extras.fridge ?? 0) * ADDON_HOURS.fridge +
@@ -1006,7 +1010,7 @@ export default function Page() {
       (extras.dishwasher ?? 0) * ADDON_HOURS.dishwasher +
       (extras.cupboards ?? 0) * ADDON_HOURS.cupboards;
 
-    let raw = roomHours + kitchensHours + toiletsHours + addOnHours;
+    let raw = roomHours + toiletsHours + addOnHours;
     const mult = form.cleanliness
       ? CLEAN_MULTIPLIER[form.cleanliness] ?? 1
       : 1;
@@ -1029,8 +1033,10 @@ export default function Page() {
       (extras.cupboards ?? 0) * ADDON_PRICES.cupboards;
 
     const suppliesFee = form.products === 'bring' ? SUPPLIES_FEE : 0;
-    const labour = estimatedHours * HOURLY_RATE;
-    const totalPrice =
+// 👇 pick the rate based on selectedDate
+const hourlyRate = isWeekend(selectedDate) ? WEEKEND_HOURLY_RATE : WEEKDAY_HOURLY_RATE;
+
+const labour = estimatedHours * hourlyRate;    const totalPrice =
       Math.round((labour + addOnsTotal + suppliesFee) * 100) / 100;
 
     return {
@@ -1042,76 +1048,21 @@ export default function Page() {
       labour,
       totalPrice,
     };
-  }, [
-    rooms,
-    kitchensCount,
-    kitchenSizeId,
-    bathroomsCount,
-    avgToilets,
-    extras,
-    form.cleanliness,
-    form.products,
-  ]);
+  }, [rooms, extras, form.cleanliness, form.products, selectedDate]);
 
-// simple summaries for display + storage
-const baseRoomSummaries = ROOM_TYPES
-  .map((rt) => {
-    const matching = rooms.filter((r) => r.typeId === rt.id);
-    if (!matching.length) return null;
-    return {
-      typeId: rt.id,
-      label: rt.label,
-      count: matching.length,
-      sizes: matching.map((r) => r.sizeId),
-    } as RoomSummary;
-  })
-  .filter((r): r is RoomSummary => r !== null);
-
-
-  const kitchenSummary: KitchenSummary = {
-    count: kitchensCount,
-    sizeId: kitchenSizeId || '',
-  };
-
-  const bathroomsSummary: BathroomsSummary = {
-    count: bathroomsCount,
-    avgToiletsPerBathroom: avgToilets,
-    sizeId: bathroomSizeId || '',
-  };
-
-  const roomSummaries: RoomSummary[] = [
-    ...baseRoomSummaries,
-    ...(kitchenSummary.count > 0
-      ? [
-          {
-            typeId: 'kitchen' as const,
-            label: 'Kitchen / tea point',
-            count: kitchenSummary.count,
-            sizes:
-              kitchenSummary.count > 0
-                ? Array(kitchenSummary.count).fill(
-                    kitchenSummary.sizeId || ''
-                  )
-                : [],
-          },
-        ]
-      : []),
-    ...(bathroomsSummary.count > 0
-      ? [
-          {
-            typeId: 'bathroom' as const,
-            label: 'Toilet room / cubicle',
-            count: bathroomsSummary.count,
-            sizes:
-              bathroomsSummary.count > 0
-                ? Array(bathroomsSummary.count).fill(
-                    bathroomsSummary.sizeId || ''
-                  )
-                : [],
-          },
-        ]
-      : []),
-  ];
+  // simple summaries for display + storage
+  const roomSummaries: RoomSummary[] = ROOM_TYPES
+    .map((rt) => {
+      const matching = rooms.filter((r) => r.typeId === rt.id);
+      if (!matching.length) return null;
+      return {
+        typeId: rt.id,
+        label: rt.label,
+        count: matching.length,
+        sizes: matching.map((r) => r.sizeId),
+      } as RoomSummary;
+    })
+    .filter((r): r is RoomSummary => r !== null);
 
   const extrasSummary: ExtrasSummary = {
     fridge: extras.fridge ?? 0,
@@ -1124,8 +1075,7 @@ const baseRoomSummaries = ROOM_TYPES
   const hasQuoteInputs =
     !!form.cleanliness ||
     roomsCount > 0 ||
-    kitchenSummary.count > 0 ||
-    bathroomsSummary.count > 0 ||
+    roomSummaries.length > 0 ||
     extrasSummary.fridge > 0 ||
     extrasSummary.freezer > 0 ||
     extrasSummary.dishwasher > 0 ||
@@ -1191,46 +1141,54 @@ const baseRoomSummaries = ROOM_TYPES
       return `Room ${i + 1} — ${rt}${label ? ` — ${label}` : ''}`;
     });
 
- // Office-specific room counts – only create keys for rooms that exist
-const officeRoomCounts: {
-  openPlan?: number;
-  meetingRooms?: number;
-  privateOffices?: number;
-  receptions?: number;
-  corridors?: number;
-  storageRooms?: number;
-} = {};
+    // Office-specific room counts – only create keys for rooms that exist
+    const officeRoomCounts: {
+      openPlan?: number;
+      meetingRooms?: number;
+      privateOffices?: number;
+      receptions?: number;
+      corridors?: number;
+      storageRooms?: number;
+      kitchens?: number;
+      bathrooms?: number;
+    } = {};
 
-for (const r of rooms) {
-  if (!r.typeId) continue;
-  switch (r.typeId) {
-    case 'open-plan':
-      officeRoomCounts.openPlan = (officeRoomCounts.openPlan ?? 0) + 1;
-      break;
-    case 'meeting':
-      officeRoomCounts.meetingRooms =
-        (officeRoomCounts.meetingRooms ?? 0) + 1;
-      break;
-    case 'private-office':
-      officeRoomCounts.privateOffices =
-        (officeRoomCounts.privateOffices ?? 0) + 1;
-      break;
-    case 'reception':
-      officeRoomCounts.receptions =
-        (officeRoomCounts.receptions ?? 0) + 1;
-      break;
-    case 'corridor':
-      officeRoomCounts.corridors =
-        (officeRoomCounts.corridors ?? 0) + 1;
-      break;
-    case 'storage':
-      officeRoomCounts.storageRooms =
-        (officeRoomCounts.storageRooms ?? 0) + 1;
-      break;
-  }
-}
-
-    
+    for (const r of rooms) {
+      if (!r.typeId) continue;
+      switch (r.typeId) {
+        case 'open-plan':
+          officeRoomCounts.openPlan = (officeRoomCounts.openPlan ?? 0) + 1;
+          break;
+        case 'meeting':
+          officeRoomCounts.meetingRooms =
+            (officeRoomCounts.meetingRooms ?? 0) + 1;
+          break;
+        case 'private-office':
+          officeRoomCounts.privateOffices =
+            (officeRoomCounts.privateOffices ?? 0) + 1;
+          break;
+        case 'reception':
+          officeRoomCounts.receptions =
+            (officeRoomCounts.receptions ?? 0) + 1;
+          break;
+        case 'corridor':
+          officeRoomCounts.corridors =
+            (officeRoomCounts.corridors ?? 0) + 1;
+          break;
+        case 'storage':
+          officeRoomCounts.storageRooms =
+            (officeRoomCounts.storageRooms ?? 0) + 1;
+          break;
+        case 'kitchen':
+          officeRoomCounts.kitchens =
+            (officeRoomCounts.kitchens ?? 0) + 1;
+          break;
+        case 'bathroom':
+          officeRoomCounts.bathrooms =
+            (officeRoomCounts.bathrooms ?? 0) + 1;
+          break;
+      }
+    }
 
     const roomSelections = roomSummaries.map((r) => ({
       typeId: r.typeId,
@@ -1244,7 +1202,6 @@ for (const r of rooms) {
       count: r.count,
       sizes: r.sizes,
     }));
-
 
     const zapPayload = {
       orderId,
@@ -1266,6 +1223,8 @@ for (const r of rooms) {
       cleanliness: form.cleanliness,
       products: form.products,
       additionalInfo: form.additionalInfo,
+      access: form.access || '',
+      accessNotes: form.keyLocation || '',
 
       // booking date/time
       bookingDate,
@@ -1290,12 +1249,8 @@ for (const r of rooms) {
       quoteAmountInPence: Math.round(pricing.totalPrice * 100),
       quoteDate: bookingDate,
 
-// office room breakdown – only added when present
-...officeRoomCounts,
-...(kitchensCount > 0 ? { kitchens: kitchensCount } : {}),
-...(bathroomsCount > 0 ? { bathrooms: bathroomsCount } : {}),
-
-
+      // office room breakdown – only added when present
+      ...officeRoomCounts,
 
       roomSelections,
 
@@ -1311,13 +1266,14 @@ for (const r of rooms) {
       additionalRooms: _additionalRooms,
       ...zapForStorage
     } = zapPayload;
-    
+
+    const hourlyRate = isWeekend(selectedDate) ? WEEKEND_HOURLY_RATE : WEEKDAY_HOURLY_RATE;
+
+
     await setDoc(doc(db, 'bookings', orderId), {
       ...zapForStorage,
       roomSummaries,
       roomSelections,
-      kitchenSummary,
-      bathroomsSummary,
       extrasSummary,
       address: {
         line1: form.addressLine1,
@@ -1329,7 +1285,7 @@ for (const r of rooms) {
       date: bookingDate,
       startTime: bookingTime,
       endTime,
-      labourRate: HOURLY_RATE,
+      labourRate: hourlyRate,
       suppliesFee: pricing.suppliesFee,
       addOnsTotal: pricing.addOnsTotal,
       labourCharge: pricing.labour,
@@ -1405,11 +1361,6 @@ for (const r of rooms) {
     setForm(initialFormState);
     setRoomsCount(0);
     setRooms([]);
-    setKitchensCount(0);
-    setKitchenSizeId('');
-    setBathroomsCount(0);
-    setBathroomSizeId('');
-    setAvgToilets(1);
     setExtras(initialExtras);
     setSelectedDate(null);
     setSelectedTime('');
@@ -1422,7 +1373,7 @@ for (const r of rooms) {
     'w-full rounded-md border border-gray-200 bg-white px-3 py-2 text-sm text-gray-800 placeholder:text-gray-400 focus:outline-none focus:ring-1 focus:ring-[#0071bc]/25 focus:border-[#0071bc]';
   const select = input;
   const sectionTitle =
-    'text-sm font-semibold text-[#0071bc] mb-4 pb-3 border-b border-gray-200';
+    'text-lg font-semibold text-[#0071bc] mb-4 pb-3 border-b border-gray-200';
   const smallMuted = 'text-xs text-gray-600';
 
   // step guards (now only for the sliding sections; contact/address is always visible)
@@ -1434,40 +1385,22 @@ for (const r of rooms) {
       if (roomsCount === 0) return true;
       return rooms.every((r) => r.typeId && r.sizeId);
     }
+    // step 2: extras & supplies
     if (step === 2) {
-      if (kitchensCount === 0) return true;
-      return !!kitchenSizeId;
-    }
-    if (step === 3) {
-      if (bathroomsCount === 0) return true;
-      return !!bathroomSizeId;
-    }
-    if (step === 4) {
       return true;
     }
-    if (step === 5) {
+    // step 3: access
+    if (step === 3) {
       return !!form.access && (form.access !== 'key' || !!form.keyLocation);
     }
     return true;
-  }, [
-    step,
-    roomsCount,
-    rooms,
-    kitchensCount,
-    kitchenSizeId,
-    bathroomsCount,
-    bathroomSizeId,
-    form.cleanliness,
-    form.products,
-    form.access,
-    form.keyLocation,
-  ]);
+  }, [step, roomsCount, rooms, form.cleanliness, form.products, form.access, form.keyLocation]);
 
   const goNext = () => {
     if (!canNext) return;
 
     // On supplies/products step, show browser "please select" message
-    if (step === 4 && !form.products && typeof document !== 'undefined') {
+    if (step === 2 && !form.products && typeof document !== 'undefined') {
       const productsSelect = document.querySelector(
         'select[name="products"]'
       ) as HTMLSelectElement | null;
@@ -1477,10 +1410,13 @@ for (const r of rooms) {
       return;
     }
 
-    setStep((s) => Math.min(5, s + 1));
+    setStep((s) => Math.min(3, s + 1));
   };
 
   const goBack = () => setStep((s) => Math.max(0, s - 1));
+
+  const containerClassName =
+    bookingComplete && lastBooking ? 'container container-thankyou' : 'container';
 
   return (
     <>
@@ -1507,6 +1443,9 @@ for (const r of rooms) {
             align-items: stretch;
             justify-content: center;
             background: transparent;
+          }
+          .container-thankyou {
+            min-height: auto !important;
           }
           .forms-row {
             display: flex !important;
@@ -1653,7 +1592,7 @@ for (const r of rooms) {
         `}</style>
 
         {bookingComplete && lastBooking ? (
-          <div className="container">
+          <div className={containerClassName}>
             <div className="forms-row">
               {/* Left: booking summary (similar width as calendar) */}
               <aside className="calendar-container self-start w-full md:w-4/12">
@@ -1779,7 +1718,7 @@ for (const r of rooms) {
             </div>
           </div>
         ) : (
-          <div className="container">
+          <div className={containerClassName}>
             <div className="forms-row">
               {/* Calendar Container */}
               <aside className="calendar-container self-start w-full md:w-4/12 bg-white rounded-lg shadow-md p-5">
@@ -1984,7 +1923,7 @@ for (const r of rooms) {
                   </div>
 
                   {/* CONTACT INFO (always visible at top) */}
-                  <div>
+                  <div className="rounded-2xl border border-gray-200 border border-[#e0e6ed] rounded-md shadow-[4px_6px_10px_-3px_#bfc9d4] p-4 sm:p-5">                    
                     <div className={sectionTitle}>Contact</div>
                     <div className="mt-2 grid grid-cols-1 gap-3 md:grid-cols-2">
                       <input
@@ -2049,14 +1988,15 @@ for (const r of rooms) {
                   {/* Sliding multi-step section with clearer separation */}
                   <div
                     key={`panel-${step}`}
-                    className="step-anim mt-6 rounded-lg border border-gray-200 bg-gray-50 px-4 py-4 md:px-5 md:py-5"
+                    ref={stepSectionRef}
+                    className="step-anim mt-6 rounded-lg border border-gray-20 border border-[#e0e6ed] rounded-md shadow-[4px_6px_10px_-3px_#bfc9d4] px-4 py-4 md:px-5 md:py-5"
                   >
                     {/* STEP 0: ROOMS & FOOTFALL */}
                     {step === 0 && (
                       <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
                         <div>
                           <label className="block text-sm font-medium text-gray-800 mb-1">
-                            Roughly how many rooms?
+                            How many rooms?
                           </label>
                           <select
                             className={select}
@@ -2078,10 +2018,7 @@ for (const r of rooms) {
                               </option>
                             ))}
                           </select>
-                          <p className={smallMuted}>
-                            Include open-plan areas, meeting rooms, private
-                            offices, corridors and storage.
-                          </p>
+                         
                         </div>
                         <div>
                           <label className="block text-sm font-medium text-gray-800 mb-1">
@@ -2104,9 +2041,7 @@ for (const r of rooms) {
                             <option value="quite-dirty">High</option>
                             <option value="filthy">Very high</option>
                           </select>
-                          <p className={smallMuted}>
-                            Used to adjust the time estimate.
-                          </p>
+                        
                         </div>
                       </div>
                     )}
@@ -2115,8 +2050,8 @@ for (const r of rooms) {
                     {step === 1 &&
                       (roomsCount === 0 ? (
                         <div className="text-sm text-gray-700">
-                          No extra room details to add — continue to kitchen and
-                          toilet details.
+                          No extra room details to add — continue to extras and
+                          supplies.
                         </div>
                       ) : (
                         <div className="space-y-3">
@@ -2180,147 +2115,8 @@ for (const r of rooms) {
                         </div>
                       ))}
 
-                    {/* STEP 2: KITCHENS */}
+                    {/* STEP 2: EXTRAS & SUPPLIES */}
                     {step === 2 && (
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                        <div>
-                          <label className="block text-sm font-medium text-gray-800 mb-1">
-                            How many kitchens / tea points?
-                          </label>
-                          <select
-                            className={select}
-                            value={kitchensCount}
-                            onChange={(e) =>
-                              setKitchensCount(
-                                Math.max(
-                                  0,
-                                  parseInt(e.target.value || '0', 10)
-                                )
-                              )
-                            }
-                          >
-                            {[0, 1, 2, 3, 4, 5].map((n) => (
-                              <option key={n} value={n}>
-                                {n}
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-                        <div>
-                          <label className="block text-sm font-medium text-gray-800 mb-1">
-                            Typical size
-                          </label>
-                          <select
-                            className={select}
-                            value={kitchenSizeId}
-                            onChange={(e) =>
-                              setKitchenSizeId(
-                                e.target.value as SizeIdLocal | ''
-                              )
-                            }
-                            disabled={kitchensCount === 0}
-                          >
-                            <option value="">Select</option>
-                            {SIZE_OPTIONS.map((s) => (
-                              <option key={s.id} value={s.id}>
-                                {`${s.label} – ${s.hint}`}
-                              </option>
-                            ))}
-                          </select>
-                          <p className={smallMuted}>
-                            Choose the closest range.
-                          </p>
-                        </div>
-                      </div>
-                    )}
-
-                    {/* STEP 3: TOILETS (mapped onto bathrooms state) */}
-                    {step === 3 && (
-                      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                        <div>
-                          <label className="block text-sm font-medium text-gray-800 mb-1">
-                            How many toilet rooms?
-                          </label>
-                          <select
-                            className={select}
-                            value={bathroomsCount}
-                            onChange={(e) =>
-                              setBathroomsCount(
-                                Math.max(
-                                  0,
-                                  parseInt(e.target.value || '0', 10)
-                                )
-                              )
-                            }
-                          >
-                            {[0, 1, 2, 3, 4, 5, 6, 8, 10].map((n) => (
-                              <option key={n} value={n}>
-                                {n}
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-
-                        <div>
-                          <label className="block text-sm font-medium text-gray-800 mb-1">
-                            Avg cubicles per toilet room
-                          </label>
-                          <select
-                            className={select}
-                            value={avgToilets}
-                            onChange={(e) =>
-                              setAvgToilets(
-                                Math.max(
-                                  1,
-                                  parseInt(e.target.value || '1', 10)
-                                )
-                              )
-                            }
-                          >
-                            {[1, 2, 3, 4, 5, 6].map((n) => (
-                              <option key={n} value={n}>
-                                {n}
-                              </option>
-                            ))}
-                          </select>
-                          <p className={smallMuted}>
-                            We&apos;ll estimate{' '}
-                            {bathroomsCount * Math.max(1, avgToilets)} cubicles
-                            in total.
-                          </p>
-                        </div>
-
-                        <div>
-                          <label className="block text-sm font-medium text-gray-800 mb-1">
-                            Typical toilet room size
-                          </label>
-                          <select
-                            className={select}
-                            value={bathroomSizeId}
-                            onChange={(e) =>
-                              setBathroomSizeId(
-                                e.target.value as SizeIdLocal | ''
-                              )
-                            }
-                            disabled={bathroomsCount === 0}
-                          >
-                            <option value="">Select</option>
-                            {SIZE_OPTIONS.map((s) => (
-                              <option key={s.id} value={s.id}>
-                                {`${s.label} – ${s.hint}`}
-                              </option>
-                            ))}
-                          </select>
-                          <p className={smallMuted}>
-                            Use extra small for compact WC rooms / single
-                            cubicles.
-                          </p>
-                        </div>
-                      </div>
-                    )}
-
-                    {/* STEP 4: EXTRAS & SUPPLIES */}
-                    {step === 4 && (
                       <>
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                           {[
@@ -2403,8 +2199,8 @@ for (const r of rooms) {
                       </>
                     )}
 
-                    {/* STEP 5: SITE & ACCESS */}
-                    {step === 5 && (
+                    {/* STEP 3: SITE & ACCESS */}
+                    {step === 3 && (
                       <>
                         <div className={sectionTitle}>Site &amp; access</div>
 
@@ -2437,22 +2233,23 @@ for (const r of rooms) {
                               <option value="" disabled>
                                 Select access method
                               </option>
-                              <option value="home">
+                              <option value="let-in">
                                 A member of staff will meet the cleaners
                               </option>
-                              <option value="key">
-                                Key / fob will be left in a location
+                              <option value="alternative">
+                                Alternative access (code, reception, lockbox,
+                                etc.)
                               </option>
                             </select>
                           </div>
 
-                          {form.access === 'key' && (
+                          {form.access === 'alternative' && (
                             <div className="fs-field">
                               <label
                                 className="text-gray-700 fs-label block text-gray-700 mb-1"
                                 htmlFor="keyLocation"
                               >
-                                Where will the key / fob be located?
+                                Alternative access details
                               </label>
                               <input
                                 className="fs-input w-full p-2 border rounded-lg"
@@ -2466,7 +2263,7 @@ for (const r of rooms) {
                                     keyLocation: e.target.value,
                                   }))
                                 }
-                                placeholder="e.g., reception, lockbox (code), security desk…"
+                                placeholder="e.g., building entry code, reception instructions, lockbox, security desk…"
                                 required
                               />
                             </div>
@@ -2513,7 +2310,7 @@ for (const r of rooms) {
                       Back
                     </button>
 
-                    {step < 5 ? (
+                    {step < 3 ? (
                       <button
                         type="button"
                         onClick={goNext}

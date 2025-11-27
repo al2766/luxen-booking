@@ -31,6 +31,14 @@ export default function HomePage() {
             <h3 className="text-lg font-semibold text-gray-900 mb-2">Office Clean</h3>
             <p className="text-sm text-gray-600">Open the office cleaning booking form (standalone page).</p>
           </Link>
+          <Link href="/deep-clean" className="block rounded-lg borde border-gray-200 bg-white p-6 shadow hover:shadow-md">
+            <h3 className="text-lg font-semibold text-gray-900 mb-2">Deep Clean</h3>
+            <p className="text-sm text-gray-600">Open the deep cleaning booking form (standalone page).</p>
+          </Link>
+          <Link href="/free-room" className="block rounded-lg borde border-gray-200 bg-white p-6 shadow hover:shadow-md">
+            <h3 className="text-lg font-semibold text-gray-900 mb-2">Free Room</h3>
+            <p className="text-sm text-gray-600">Open the Free room cleaning booking form (standalone page).</p>
+          </Link>
           
          
         </div>

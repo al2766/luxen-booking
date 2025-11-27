@@ -18,6 +18,7 @@ import {
 import { IframeHeightReporter } from '../IframeHeightReporter';
 
 
+
 // ========= AddressLookup (with postcode coverage check) =========
 type AddressLookupProps = {
   onAddressSelect?: (addr: {
@@ -77,8 +78,6 @@ function AddressLookup({ onAddressSelect }: AddressLookupProps) {
     setPostcode(e.target.value.toUpperCase());
     setError('');
   };
-
-  
 
   // Extract outward part (e.g. "M1", "M23", "M17") from a full postcode
   const extractOutward = (raw: string): string | null => {
@@ -258,7 +257,7 @@ function AddressLookup({ onAddressSelect }: AddressLookupProps) {
 
   return (
     <div className="address-lookup-container rounded-2xl border border-gray-200 border border-[#e0e6ed]
-  rounded-md shadow-[4px_6px_10px_-3px_#bfc9d4] p-4 sm:p-5">
+    rounded-md shadow-[4px_6px_10px_-3px_#bfc9d4] p-4 sm:p-5">
       <div className="text-lg font-semibold text-[#0071bc] mb-3 pb-2 border-b border-gray-200">
         Address
       </div>
@@ -266,6 +265,12 @@ function AddressLookup({ onAddressSelect }: AddressLookupProps) {
       {/* Postcode Search */}
       <div className="flex flex-wrap items-end gap-2 mb-3">
         <div className="fs-field flex-grow">
+          <label
+            className="fs-label block text-gray-700 mb-1"
+            htmlFor="postcode"
+          >
+            Enter Postcode
+          </label>
           <input
             className="fs-input w-full p-2 border border-gray-200 rounded-lg"
             type="text"
@@ -273,7 +278,7 @@ function AddressLookup({ onAddressSelect }: AddressLookupProps) {
             name="postcode"
             value={postcode}
             onChange={handlePostcodeChange}
-            placeholder="Enter Postcode e.g. M1 1AA"
+            placeholder="e.g. M1 1AA"
           />
         </div>
         <button
@@ -431,7 +436,6 @@ function AddressLookup({ onAddressSelect }: AddressLookupProps) {
         </div>
       )}
 
-    
 
       {/* Not-covered modal */}
       {notCoveredMsg && (
@@ -454,38 +458,7 @@ function AddressLookup({ onAddressSelect }: AddressLookupProps) {
   );
 }
 
-// ---- Staff pay helpers (match admin logic) ----
-function isWeekendYmd(dateStr?: string | null): boolean {
-  if (!dateStr) return false;
-  const [y, m, d] = dateStr.split('-').map(Number);
-  if (!y || !m || !d) return false;
-  const dt = new Date(y, m - 1, d);
-  const day = dt.getDay(); // 0 = Sunday, 6 = Saturday
-  return day === 0 || day === 6;
-}
-
-// Pay rules:
-// - Standard jobs:  £15 on weekdays, £17 on weekends
-// - Deep clean:     £21 on weekdays, £23 on weekends
-function getStaffRateForJob(job: {
-  serviceType?: string | null;
-  date?: string | null;
-}): number {
-  const st = (job.serviceType || '').toLowerCase();
-  const isWeekendJob = isWeekendYmd(job.date);
-  const isDeep = st.includes('deep');
-
-  if (isDeep) {
-    // Deep clean
-    return isWeekendJob ? 23 : 21;
-  }
-
-  // All other service types
-  return isWeekendJob ? 17 : 15;
-}
 // ========= Shared availability helpers (same as office-clean) =========
-
-
 type AnyAvail =
   | {
       available?: boolean;
@@ -592,19 +565,16 @@ const money = new Intl.NumberFormat('en-GB', {
 });
 
 // ================= PRICING =================
-
 // ================= PRICING =================
-const WEEKDAY_HOURLY_RATE = 21;
-const WEEKEND_HOURLY_RATE = 23;
-const MIN_HOURS = 1;
+const WEEKDAY_HOURLY_RATE = 30;
+const WEEKEND_HOURLY_RATE = 32;
+const MIN_HOURS = 2;
 
 function isWeekend(date: Date | null): boolean {
   if (!date) return false;
   const day = date.getDay(); // 0 = Sunday, 6 = Saturday
   return day === 0 || day === 6;
 }
-
-
 
 const SUPPLIES_FEE = 5;
 const TEAM_THRESHOLD_HOURS = 4; // threshold for 2 cleaners
@@ -738,7 +708,7 @@ const initialFormState = {
   town: '',
   county: '',
   postcode: '',
-  serviceType: 'Home Cleaning',
+  serviceType: 'Deep Cleaning',
   access: '',
   keyLocation: '',
 };
@@ -1046,11 +1016,12 @@ export default function Page() {
       (extras.cupboards ?? 0) * ADDON_PRICES.cupboards;
 
     const suppliesFee = form.products === 'bring' ? SUPPLIES_FEE : 0;
-// 👇 pick the rate based on selectedDate
+    // 👇 pick the rate based on selectedDate
 const hourlyRate = isWeekend(selectedDate) ? WEEKEND_HOURLY_RATE : WEEKDAY_HOURLY_RATE;
 
-const labour = estimatedHours * hourlyRate;    
-const totalPrice = Math.round((labour + addOnsTotal + suppliesFee) * 100) / 100;
+const labour = estimatedHours * hourlyRate;
+
+    const totalPrice = Math.round((labour + addOnsTotal + suppliesFee) * 100) / 100;
 
     return {
       estimatedHours,
@@ -1413,26 +1384,20 @@ const totalPrice = Math.round((labour + addOnsTotal + suppliesFee) * 100) / 100;
         createdAt: serverTimestamp(),
       });
 
-           // Dynamic staff pay using same rules as admin
-           const staffRate = getStaffRateForJob({
-            serviceType,          // e.g. "Home Cleaning", "Deep clean", etc.
-            date: bookingDate,    // "YYYY-MM-DD"
-          });
-    
-          const staffMultiplier = pricing.teamApplied ? 2 : 1;
-          const staffPayTotal =
-            (Number(pricing.estimatedHours) || 0) * staffRate * staffMultiplier;
-    
-          if (staffPayTotal > 0) {
-            await addDoc(financesRef, {
-              type: 'Expense',
-              name: `Staff pay for ${orderId}`,
-              amount: Number(staffPayTotal.toFixed(2)),
-              frequency: 'One-time',
-              createdAt: serverTimestamp(),
-            });
-          }
-    
+      const STAFF_RATE = 12.21;
+      const staffMultiplier = pricing.teamApplied ? 2 : 1;
+      const staffPayTotal =
+        (Number(pricing.estimatedHours) || 0) * STAFF_RATE * staffMultiplier;
+
+      if (staffPayTotal > 0) {
+        await addDoc(financesRef, {
+          type: 'Expense',
+          name: `Staff pay for ${orderId}`,
+          amount: Number(staffPayTotal.toFixed(2)),
+          frequency: 'One-time',
+          createdAt: serverTimestamp(),
+        });
+      }
     } catch (err) {
       console.error('Failed to log finances for booking', err);
     }
@@ -1811,7 +1776,7 @@ const totalPrice = Math.round((labour + addOnsTotal + suppliesFee) * 100) / 100;
                         2. Complete payment
                       </div>
                       <p className="text-xs text-gray-700">
-                        Please make payment at least 12 hours before your
+                        Please make payment at least 24 hours before your
                         booking time to fully confirm the clean.
                       </p>
                     </div>
@@ -1906,7 +1871,7 @@ const totalPrice = Math.round((labour + addOnsTotal + suppliesFee) * 100) / 100;
                     ))}
                   </div>
 
-                  <div className="mt-2 grid grid-cols-7  gap-2">
+                  <div className="mt-2 grid grid-cols-7 gap-2">
                     {grid.map((cell, i) => {
                       const isSelected =
                         cell.date &&
@@ -2042,7 +2007,7 @@ const totalPrice = Math.round((labour + addOnsTotal + suppliesFee) * 100) / 100;
 
                   {/* CONTACT INFO (always visible at top) */}
                   <div className="rounded-2xl border border-gray-200 border border-[#e0e6ed] rounded-md shadow-[4px_6px_10px_-3px_#bfc9d4] p-4 sm:p-5">                    
-                  <div className={sectionTitle}>Contact</div>
+                    <div className={sectionTitle}>Contact</div>
                     <div className="mt-2 grid grid-cols-1 gap-3 md:grid-cols-2">
                       <input
                         className={input}
@@ -2136,10 +2101,11 @@ const totalPrice = Math.round((labour + addOnsTotal + suppliesFee) * 100) / 100;
                               </option>
                             ))}
                           </select>
+                      
                         </div>
                         {/* <div>
                           <label className="block text-sm font-medium text-gray-800 mb-1">
-                            How untidy is the property?
+                            How dirty is the property?
                           </label>
                           <select
                             className={select}
@@ -2153,7 +2119,7 @@ const totalPrice = Math.round((labour + addOnsTotal + suppliesFee) * 100) / 100;
                             required
                           >
                             <option value="">Select</option>
-                            <option value="quite-clean">Quite tidy</option>
+                            <option value="quite-clean">Quite clean</option>
                             <option value="average">Average</option>
                             <option value="quite-dirty">Quite dirty</option>
                             <option value="filthy">Very dirty</option>
@@ -2177,11 +2143,11 @@ const totalPrice = Math.round((labour + addOnsTotal + suppliesFee) * 100) / 100;
                           {rooms.map((r, idx) => (
                             <div
                               key={idx}
-                              className="border-gray-200 grid grid-cols-1 md:grid-cols-2 gap-3  rounded-lg bg-white"
+                              className="border-gray-200 grid grid-cols-1 md:grid-cols-2 gap-3 border rounded-lg p-3 bg-white"
                             >
                               <div>
                                 <label className="block text-sm font-medium text-gray-800 mb-1">
-                                  Room {idx + 1}
+                                  Room {idx + 1} — type
                                 </label>
                                 <select
                                   className={select}
